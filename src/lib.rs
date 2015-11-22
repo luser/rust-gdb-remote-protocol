@@ -3,7 +3,7 @@ extern crate nom;
 
 use nom::IResult::*;
 use nom::{Consumer,ConsumerState,Move,Input,Producer};
-use std::io::{BufRead,BufReader,Read,SeekFrom};
+use std::io::{BufRead,BufReader,Read,SeekFrom,Write};
 use std::str;
 
 named!(checksum<&[u8], u8>,
@@ -17,7 +17,7 @@ named!(packet<&[u8], (Vec<u8>, u8)>,
                                  checksum)));
 
 #[derive(Debug,PartialEq,Eq)]
-pub enum Packet {
+enum Packet {
     Ack,
     Nack,
     Data(Vec<u8>, u8),
@@ -30,6 +30,125 @@ named!(packet_or_response<Packet>, alt!(
     ));
 
 consumer_from_parser!(GdbConsumer<Packet>, packet_or_response);
+
+#[derive(PartialEq)]
+enum ReadProducerState {
+    Ok,
+    Eof,
+    Error,
+}
+
+struct ReadProducer<T : Read> {
+    reader : BufReader<T>,
+    /// Current state of this producer.
+    pub state : ReadProducerState,
+}
+
+impl<T : Read> ReadProducer<T> {
+    pub fn new(read : T) -> ReadProducer<T> {
+        ReadProducer {
+            reader : BufReader::new(read),
+            state : ReadProducerState::Ok,
+        }
+    }
+}
+
+impl<'x, T : Read> Producer<'x,&'x [u8],Move> for ReadProducer<T> {
+    fn apply<'a,O,E>(&'x mut self, consumer: &'a mut Consumer<&'x[u8],O,E,Move>) -> &'a ConsumerState<O,E,Move> {
+        if {
+            match consumer.state() {
+                &ConsumerState::Continue(ref m) | &ConsumerState::Done(ref m, _) => {
+                    match *m {
+                        Move::Consume(s) => {
+                            if s > 0 {
+                                self.reader.consume(s);
+                            }
+                        },
+                        Move::Await(a) => {
+                            panic!("not handled for now: await({:?}", a);
+                        }
+                        Move::Seek(SeekFrom::Start(_)) => {
+                            panic!("ReadProducer can't SeekFrom::Start");
+                        },
+                        Move::Seek(SeekFrom::Current(offset)) => {
+                            if offset < 0 {
+                                panic!("ReadProducer can't SeekFrom::Current backwards!");
+                            }
+                            panic!("Not yet implemented");
+                        },
+                        Move::Seek(SeekFrom::End(_)) => {
+                            panic!("ReadProducer can't SeekFrom::End");
+                        }
+                    }
+                    true
+                },
+                _ => false,
+            }
+        }
+        {
+            if let Ok(buf) = self.reader.fill_buf() {
+                if buf.len() == 0 {
+                    self.state = ReadProducerState::Eof;
+                    consumer.handle(Input::Eof(None))
+                } else {
+                    consumer.handle(Input::Element(buf))
+                }
+            } else {
+                self.state = ReadProducerState::Error;
+                consumer.handle(Input::Eof(None))
+            }
+        } else {
+            consumer.state()
+        }
+    }
+}
+
+pub trait Handler {
+}
+
+/// Compute a checksum of `bytes`: modulo-265 sum of each byte in `bytes`.
+fn compute_checksum(bytes : &[u8]) -> u8 {
+    bytes.iter().fold(0, |sum, &b| sum.wrapping_add(b))
+}
+
+/// Read gdbserver packets from `reader` and call methods on `handler` to handle them and write responses to `writer`.
+pub fn process_packets_from<R, W, H>(reader : R,
+                                     mut writer : W,
+                                     _handler : H) where R : Read, W : Write, H : Handler {
+    let mut p = ReadProducer::new(reader);
+    let mut c = GdbConsumer::new();
+    while p.state == ReadProducerState::Ok {
+        if let Some(ref packet) = p.run(&mut c) {
+            match **packet {
+                Packet::Data(ref data, ref checksum) => {
+                    let chk = compute_checksum(&data);
+                    if chk == checksum {
+                        // Write an ACK
+                        if !writer.write_all(&b"+"[..]).is_ok() {
+                            //TODO: propogate errors to caller?
+                            return;
+                        }
+                        //TODO: process packet, write result
+                    } else {
+                        // Write a NACK
+                        if !writer.write_all(&b"-"[..]).is_ok() {
+                            //TODO: propogate errors to caller?
+                            return;
+                        }
+                    }
+                },
+                // Just ignore ACK/NACK
+                _ => {},
+            }
+        }
+    }
+}
+
+#[test]
+fn test_compute_checksum() {
+    assert_eq!(compute_checksum(&b""[..]), 0);
+    assert_eq!(compute_checksum(&b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..]), 0xb5);
+}
 
 #[test]
 fn test_checksum() {
@@ -139,6 +258,51 @@ fn test_consumer() {
         let state = c.handle(Input::Element(&b"$xyz#a"[..]));
         if let &ConsumerState::Continue(Move::Await(_)) = state {
             assert!(true, "OK!");
+        } else {
+            assert!(false, format!("Bad state: {:?}", state));
+        }
+    }
+}
+
+#[test]
+fn test_producer_consumer() {
+    use std::io::Cursor;
+    let bytes = b"+$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5-";
+    let cur = Cursor::new(&bytes[..]);
+    let mut p = ReadProducer::new(cur);
+    let mut c = GdbConsumer::new();
+    {
+        let state = p.apply(&mut c);
+        if let &ConsumerState::Done(Move::Consume(n), Packet::Ack) = state {
+            assert_eq!(n, 1);
+        } else {
+            assert!(false, format!("Bad state: {:?}", state));
+        }
+    }
+    {
+        let state = p.apply(&mut c);
+        if let &ConsumerState::Done(Move::Consume(n), Packet::Data(ref d, chk)) = state {
+            assert_eq!(*d, b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..].to_vec());
+            assert_eq!(n, 58);
+            assert_eq!(chk, 0xb5);
+        } else {
+            assert!(false, format!("Bad state: {:?}", state));
+        }
+    }
+    {
+        let state = p.apply(&mut c);
+        if let &ConsumerState::Done(Move::Consume(n), Packet::Data(ref d, chk)) = state {
+            assert_eq!(*d, b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..].to_vec());
+            assert_eq!(n, 58);
+            assert_eq!(chk, 0xb5);
+        } else {
+            assert!(false, format!("Bad state: {:?}", state));
+        }
+    }
+    {
+        let state = p.apply(&mut c);
+        if let &ConsumerState::Done(Move::Consume(n), Packet::Nack) = state {
+            assert_eq!(n, 1);
         } else {
             assert!(false, format!("Bad state: {:?}", state));
         }
