@@ -1,10 +1,15 @@
 #[macro_use]
 extern crate nom;
 
+mod read_producer;
+
 use nom::IResult::*;
-use nom::{Consumer,ConsumerState,Move,Input,Producer};
-use std::io::{BufRead,BufReader,Read,SeekFrom,Write};
+use nom::{Consumer,ConsumerState,IResult,Move,Input,Producer};
+use std::collections::HashMap;
+use std::io::{self,BufRead,BufReader,Read,SeekFrom,Write};
 use std::str;
+
+use read_producer::{ReadProducer,ReadProducerState};
 
 named!(checksum<&[u8], u8>,
        map_res!(map_res!(take!(2), str::from_utf8),
@@ -31,76 +36,76 @@ named!(packet_or_response<Packet>, alt!(
 
 consumer_from_parser!(GdbConsumer<Packet>, packet_or_response);
 
-#[derive(PartialEq)]
-enum ReadProducerState {
-    Ok,
-    Eof,
-    Error,
+enum FeatureSupported<'a> {
+    Yes,
+    No,
+    Maybe,
+    Value(&'a str),
+}
+/// GDB remote protocol commands, as defined in https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
+enum Command<'a> {
+    /// Enable extended mode.
+    EnableExtendedMode,
+    /// Indicate the reason the target halted.
+    TargetHaltReason,
+    /// Toggle debug flag.
+    ToggleDebug,
+    // Read general registers.
+    ReadGeneralRegisters,
+    // Kill request.
+    Kill,
+    /// Tell the remote stub about features supported by gdb, and query the stub for features it supports.
+    QuerySupportedFeatures(HashMap<&'a str, FeatureSupported<'a>>),
+    Reset,
 }
 
-struct ReadProducer<T : Read> {
-    reader : BufReader<T>,
-    /// Current state of this producer.
-    pub state : ReadProducerState,
-}
-
-impl<T : Read> ReadProducer<T> {
-    pub fn new(read : T) -> ReadProducer<T> {
-        ReadProducer {
-            reader : BufReader::new(read),
-            state : ReadProducerState::Ok,
-        }
-    }
-}
-
-impl<'x, T : Read> Producer<'x,&'x [u8],Move> for ReadProducer<T> {
-    fn apply<'a,O,E>(&'x mut self, consumer: &'a mut Consumer<&'x[u8],O,E,Move>) -> &'a ConsumerState<O,E,Move> {
-        if {
-            match consumer.state() {
-                &ConsumerState::Continue(ref m) | &ConsumerState::Done(ref m, _) => {
-                    match *m {
-                        Move::Consume(s) => {
-                            if s > 0 {
-                                self.reader.consume(s);
-                            }
-                        },
-                        Move::Await(a) => {
-                            panic!("not handled for now: await({:?}", a);
-                        }
-                        Move::Seek(SeekFrom::Start(_)) => {
-                            panic!("ReadProducer can't SeekFrom::Start");
-                        },
-                        Move::Seek(SeekFrom::Current(offset)) => {
-                            if offset < 0 {
-                                panic!("ReadProducer can't SeekFrom::Current backwards!");
-                            }
-                            panic!("Not yet implemented");
-                        },
-                        Move::Seek(SeekFrom::End(_)) => {
-                            panic!("ReadProducer can't SeekFrom::End");
-                        }
-                    }
-                    true
-                },
-                _ => false,
-            }
-        }
-        {
-            if let Ok(buf) = self.reader.fill_buf() {
-                if buf.len() == 0 {
-                    self.state = ReadProducerState::Eof;
-                    consumer.handle(Input::Eof(None))
-                } else {
-                    consumer.handle(Input::Element(buf))
-                }
-            } else {
-                self.state = ReadProducerState::Error;
-                consumer.handle(Input::Eof(None))
-            }
-        } else {
-            consumer.state()
-        }
-    }
+fn command<'a>(i : &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    alt!(i,
+    tag!("!") => { |_|   Command::EnableExtendedMode }
+    | tag!("?") => { |_| Command::TargetHaltReason }
+    // A arglen,argnum,arg,
+    // b baud
+    // B addr,mode
+    // bc
+    // bs
+    // c [addr]
+    // c sig[;addr]
+    | tag!("d") => { |_| Command::ToggleDebug }
+    // D
+    // D;pid
+    // F RC,EE,CF;XX’
+    | tag!("g") => { |_| Command::ReadGeneralRegisters }
+    // G XX...
+    // H op thread-id
+    // i [addr[,nnn]]
+    | tag!("k") => { |_| Command::Kill }
+    // m addr,length
+    // M addr,length:XX...
+    // p n
+    // P n...=r...
+    // ‘q name params...’
+    // ‘Q name params...’
+    | tag!("r") => { |_| Command::Reset }
+    | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
+    // s [addr]
+    // S sig[;addr]
+    // t addr:PP,MM
+    // T thread-id
+    // v ...
+    // X addr,length:XX...
+    // ‘z type,addr,kind’
+    // ‘Z type,addr,kind’
+    // ‘z0,addr,kind’
+    // ‘Z0,addr,kind[;cond_list...][;cmds:persist,cmd_list...]’
+    // ‘z1,addr,kind’
+    // ‘Z1,addr,kind[;cond_list...]’
+    // ‘z2,addr,kind’
+    // ‘Z2,addr,kind’
+    // ‘z3,addr,kind’
+    // ‘Z3,addr,kind’
+    // ‘z4,addr,kind’
+    // ‘Z4,addr,kind’
+         )
 }
 
 pub trait Handler {
@@ -111,10 +116,23 @@ fn compute_checksum(bytes : &[u8]) -> u8 {
     bytes.iter().fold(0, |sum, &b| sum.wrapping_add(b))
 }
 
+/// Handle a single packet `data` with `handler` and write a response to `writer`.
+fn handle_packet<H : Handler, W : Write>(data : &[u8],
+                                         _handler : &H,
+                                         writer : &mut W) -> io::Result<()> {
+    println!("Command: {}", str::from_utf8(data).unwrap());
+    if let Done(_, ref command) = command(data) {
+        writer.write_all(&b"$#00"[..])
+    } else {
+        // Return an empty response for unsupported commands.
+        writer.write_all(&b"$#00"[..])
+    }
+}
+
 /// Read gdbserver packets from `reader` and call methods on `handler` to handle them and write responses to `writer`.
 pub fn process_packets_from<R, W, H>(reader : R,
                                      mut writer : W,
-                                     _handler : H) where R : Read, W : Write, H : Handler {
+                                     handler : H) where R : Read, W : Write, H : Handler {
     let mut p = ReadProducer::new(reader);
     let mut c = GdbConsumer::new();
     while p.state == ReadProducerState::Ok {
@@ -122,13 +140,13 @@ pub fn process_packets_from<R, W, H>(reader : R,
             match **packet {
                 Packet::Data(ref data, ref checksum) => {
                     let chk = compute_checksum(&data);
-                    if chk == checksum {
+                    if chk == *checksum {
                         // Write an ACK
                         if !writer.write_all(&b"+"[..]).is_ok() {
                             //TODO: propogate errors to caller?
                             return;
                         }
-                        //TODO: process packet, write result
+                        handle_packet(&data, &handler, &mut writer);
                     } else {
                         // Write a NACK
                         if !writer.write_all(&b"-"[..]).is_ok() {
