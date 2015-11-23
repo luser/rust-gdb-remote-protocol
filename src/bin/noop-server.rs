@@ -1,6 +1,6 @@
-extern crate gdbserver;
+extern crate gdb_remote_protocol;
 
-use gdbserver::{Handler,process_packets_from};
+use gdb_remote_protocol::{Handler,process_packets_from};
 use std::net::TcpListener;
 
 struct NoopHandler;

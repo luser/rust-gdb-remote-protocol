@@ -1,5 +1,5 @@
 [package]
-name = "gdbserver"
+name = "gdb-remote-protocol"
 version = "0.1.0"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 
