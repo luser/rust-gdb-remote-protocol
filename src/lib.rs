@@ -1,15 +1,12 @@
 #[macro_use]
 extern crate nom;
 
-mod read_producer;
-
 use nom::IResult::*;
-use nom::{Consumer,ConsumerState,IResult,Move,Input,Producer};
+use nom::IResult;
 use std::collections::HashMap;
-use std::io::{self,BufRead,BufReader,Read,SeekFrom,Write};
+use std::io::{self,BufRead,BufReader,Read,Write};
 use std::str;
 
-use read_producer::{ReadProducer,ReadProducerState};
 
 named!(checksum<&[u8], u8>,
        map_res!(map_res!(take!(2), str::from_utf8),
@@ -33,8 +30,6 @@ named!(packet_or_response<Packet>, alt!(
     | tag!("+") => { |_|   Packet::Ack }
     | tag!("-") => { |_|   Packet::Nack }
     ));
-
-consumer_from_parser!(GdbConsumer<Packet>, packet_or_response);
 
 enum FeatureSupported<'a> {
     Yes,
@@ -129,36 +124,64 @@ fn handle_packet<H : Handler, W : Write>(data : &[u8],
     }
 }
 
+fn offset(from : &[u8], to : &[u8]) -> usize {
+    let fst = from.as_ptr();
+    let snd = to.as_ptr();
+
+    snd as usize - fst as usize
+}
+
+fn run_parser(buf : &[u8]) -> Option<(usize, Packet)> {
+    if let Done(rest, packet) = packet_or_response(buf) {
+        Some((offset(buf, rest), packet))
+    } else {
+        None
+    }
+}
+
 /// Read gdbserver packets from `reader` and call methods on `handler` to handle them and write responses to `writer`.
 pub fn process_packets_from<R, W, H>(reader : R,
                                      mut writer : W,
                                      handler : H) where R : Read, W : Write, H : Handler {
-    let mut p = ReadProducer::new(reader);
-    let mut c = GdbConsumer::new();
-    while p.state == ReadProducerState::Ok {
-        if let Some(ref packet) = p.run(&mut c) {
-            match **packet {
-                Packet::Data(ref data, ref checksum) => {
-                    let chk = compute_checksum(&data);
-                    if chk == *checksum {
-                        // Write an ACK
-                        if !writer.write_all(&b"+"[..]).is_ok() {
-                            //TODO: propogate errors to caller?
-                            return;
-                        }
-                        handle_packet(&data, &handler, &mut writer);
-                    } else {
-                        // Write a NACK
-                        if !writer.write_all(&b"-"[..]).is_ok() {
-                            //TODO: propogate errors to caller?
-                            return;
-                        }
-                    }
-                },
-                // Just ignore ACK/NACK
-                _ => {},
+    let mut bufreader = BufReader::new(reader);
+    let mut done = false;
+    while !done {
+        let length = if let Ok(buf) = bufreader.fill_buf() {
+            if buf.len() == 0 {
+                done = true;
             }
-        }
+            if let Some((len, packet)) = run_parser(buf) {
+                match packet {
+                    Packet::Data(ref data, ref checksum) => {
+                        let chk = compute_checksum(&data);
+                        if chk == *checksum {
+                            // Write an ACK
+                            if !writer.write_all(&b"+"[..]).is_ok() {
+                                //TODO: propogate errors to caller?
+                                return;
+                            }
+                            handle_packet(&data, &handler, &mut writer).unwrap();
+                        } else {
+                            // Write a NACK
+                            if !writer.write_all(&b"-"[..]).is_ok() {
+                                //TODO: propogate errors to caller?
+                                return;
+                            }
+                        }
+                    },
+                    // Just ignore ACK/NACK
+                    _ => {},
+                };
+                len
+            } else {
+                0
+            }
+        } else {
+            // Error reading
+            done = true;
+            0
+        };
+        bufreader.consume(length);
     }
 }
 
@@ -199,130 +222,5 @@ fn test_packet_or_response() {
     assert_eq!(packet_or_response(&b"-"[..]), Done(&b""[..], Packet::Nack));
 }
 
-#[test]
-fn test_consumer() {
-    let mut c = GdbConsumer::new();
-    {
-        let state = c.state();
-        if let &ConsumerState::Continue(Move::Consume(n)) = state {
-            assert_eq!(n, 0);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Empty);
-        if let &ConsumerState::Continue(Move::Consume(n)) = state {
-            assert_eq!(n, 0);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"+"[..]));
-        if let &ConsumerState::Done(Move::Consume(n),
-                                    Packet::Ack) = state {
-            assert_eq!(n, 1);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"-"[..]));
-        if let &ConsumerState::Done(Move::Consume(n),
-                                    Packet::Nack) = state {
-            assert_eq!(n, 1);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"$#00"[..]));
-        if let &ConsumerState::Done(Move::Consume(n),
-                                    Packet::Data(ref d, 0)) = state {
-            assert_eq!(n, 4);
-            assert_eq!(*d, b""[..].to_vec());
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"$xyz#a1"[..]));
-        if let &ConsumerState::Done(Move::Consume(n),
-                                    Packet::Data(ref d, 0xa1)) = state {
-            assert_eq!(n, 7);
-            assert_eq!(*d, b"xyz"[..].to_vec());
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"$xyz"[..]));
-        if let &ConsumerState::Continue(Move::Await(_)) = state {
-            assert!(true, "OK!");
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"$xyz#"[..]));
-        if let &ConsumerState::Continue(Move::Await(_)) = state {
-            assert!(true, "OK!");
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = c.handle(Input::Element(&b"$xyz#a"[..]));
-        if let &ConsumerState::Continue(Move::Await(_)) = state {
-            assert!(true, "OK!");
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-}
+//     let bytes = b"+$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5-";
 
-#[test]
-fn test_producer_consumer() {
-    use std::io::Cursor;
-    let bytes = b"+$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5-";
-    let cur = Cursor::new(&bytes[..]);
-    let mut p = ReadProducer::new(cur);
-    let mut c = GdbConsumer::new();
-    {
-        let state = p.apply(&mut c);
-        if let &ConsumerState::Done(Move::Consume(n), Packet::Ack) = state {
-            assert_eq!(n, 1);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = p.apply(&mut c);
-        if let &ConsumerState::Done(Move::Consume(n), Packet::Data(ref d, chk)) = state {
-            assert_eq!(*d, b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..].to_vec());
-            assert_eq!(n, 58);
-            assert_eq!(chk, 0xb5);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = p.apply(&mut c);
-        if let &ConsumerState::Done(Move::Consume(n), Packet::Data(ref d, chk)) = state {
-            assert_eq!(*d, b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..].to_vec());
-            assert_eq!(n, 58);
-            assert_eq!(chk, 0xb5);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-    {
-        let state = p.apply(&mut c);
-        if let &ConsumerState::Done(Move::Consume(n), Packet::Nack) = state {
-            assert_eq!(n, 1);
-        } else {
-            assert!(false, format!("Bad state: {:?}", state));
-        }
-    }
-}
