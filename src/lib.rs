@@ -1,3 +1,21 @@
+/*
+Still needed to get a working session up with GDB (possibly incomplete):
+
+ 1. Return a sensible feature list from qSupported.
+ 2. Support vMustReplyEmpty, QStartNoAckMode.
+ 3. Support qXfer:features:read for target descriptions (take xml files from GDB repo).
+ 4. Support qXfer:auxv:read
+ 5. Support nqXfer:threads:read
+ 6. Support qAttached
+ 7. Support qXfer:libraries-svr4:read
+ 8. Support m (memory read)
+ 9. Support H (set thread)
+10. Support ? (stop reason)
+11. Support qOffsets? (not sure)
+12. Support qSymbol
+13. Support vKill
+
+*/
 #[macro_use]
 extern crate nom;
 extern crate strum;
@@ -176,6 +194,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // ‘q name params...’
     | query => { |q| Command::Query(q) }
     // ‘Q name params...’
+    //TODO: support QStartNoAckMode
     | tag!("r") => { |_| Command::Reset }
     | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
     // s [addr]
@@ -230,6 +249,8 @@ W: Write,
             Command::ReadGeneralRegisters => unimplemented!(),
             Command::Kill => unimplemented!(),
             Command::Reset => unimplemented!(),
+            //TODO: return a standard set of supported features, let Handler impls yield more?
+            Command::Query(Query::SupportedFeatures(ref _features)) => unimplemented!(),
             _ => unsupported(writer),
         }
     } else {
