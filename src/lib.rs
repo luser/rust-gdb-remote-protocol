@@ -1,7 +1,7 @@
 /*
 Still needed to get a working session up with GDB (possibly incomplete):
 
- 1. Return a sensible feature list from qSupported.
+ *. Return a sensible feature list from qSupported.
  2. Support vMustReplyEmpty, QStartNoAckMode.
  3. Support qXfer:features:read for target descriptions (take xml files from GDB repo).
  4. Support qXfer:auxv:read
@@ -27,6 +27,8 @@ use nom::{IResult, Needed};
 use std::io::{self,BufRead,BufReader,Read,Write};
 use std::str::{self, FromStr};
 
+const MAX_PACKET_SIZE: usize = 65 * 1024;
+
 
 named!(checksum<&[u8], u8>,
        map_res!(map_res!(take!(2), str::from_utf8),
@@ -44,13 +46,15 @@ named!(packet<&[u8], (Vec<u8>, u8)>,
 enum Packet {
     Ack,
     Nack,
+    Interrupt,
     Data(Vec<u8>, u8),
 }
 
 named!(packet_or_response<Packet>, alt!(
     packet => { |(d, chk)| Packet::Data(d, chk) }
-    | tag!("+") => { |_|   Packet::Ack }
-    | tag!("-") => { |_|   Packet::Nack }
+    | tag!("+") => { |_| Packet::Ack }
+    | tag!("-") => { |_| Packet::Nack }
+    | tag!("\x03") => { |_| Packet::Interrupt }
     ));
 
 #[allow(non_camel_case_types)]
@@ -102,6 +106,8 @@ enum Query<'a> {
     /// Tell the remote stub about features supported by gdb, and query the stub for features
     /// it supports.
     SupportedFeatures(Vec<GDBFeatureSupported<'a>>),
+    /// Disable acknowledgements.
+    StartNoAckMode,
 }
 
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
@@ -148,24 +154,23 @@ fn gdbfeaturesupported<'a>(i: &'a [u8]) -> IResult<&'a [u8], GDBFeatureSupported
 }
 
 fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
-    preceded!(i, tag!("q"),
-              alt_complete!(
-                  tag!("C") => { |_| Query::CurrentThread }
-                  /*
-                  | preceded!(tag!("CRC"), separated_pair!(addr, tag!(","), length)) => {
-                  |(addr, length)| Query::CRC { addr, length }
-              }
-                   */
-                  | preceded!(tag!("Supported"),
+    alt_complete!(i,
+                  tag!("qC") => { |_| Query::CurrentThread }
+                  | preceded!(tag!("qSupported"),
                               preceded!(tag!(":"),
                                         separated_list_complete!(tag!(";"),
                                                                  gdbfeaturesupported))) => {
                       |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
                   }
+                  | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
                   )
-              )
 }
-
+/*
+fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    preceded!(i, tag!("v"),
+              CtrlC
+              alt_complete!(tag!("MustReplyEmpty")
+*/
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
@@ -201,7 +206,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // S sig[;addr]
     // t addr:PP,MM
     // T thread-id
-    // v ...
+    //| v_command => { |v| v }
     // X addr,length:XX...
     // ‘z type,addr,kind’
     // ‘Z type,addr,kind’
@@ -227,36 +232,58 @@ fn compute_checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |sum, &b| sum.wrapping_add(b))
 }
 
-fn unsupported<W>(writer: &mut W) -> io::Result<()>
+enum Response<'a> {
+    Empty,
+    String(&'a str),
+}
+
+fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     where W: Write,
 {
-    writer.write_all(&b"$#00"[..])
+    match response {
+        Response::Empty => {
+            writer.write_all(&b"$#00"[..])
+        }
+        Response::String(s) => {
+            write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+        }
+    }
+}
+
+fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
+    where H: Handler,
+{
+    Response::String("PacketSize=65536;QStartNoAckMode+")
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
-fn handle_packet<H, W>(data : &[u8],
-                       _handler : &H,
-                       writer : &mut W) -> io::Result<()>
+fn handle_packet<H, W>(data: &[u8],
+                       handler: &H,
+                       writer: &mut W) -> io::Result<bool>
     where H: Handler,
 W: Write,
 {
     println!("Command: {}", str::from_utf8(data).unwrap());
-    if let Done(_, ref command) = command(data) {
-        match *command {
-            Command::EnableExtendedMode => unimplemented!(),
-            Command::TargetHaltReason => unimplemented!(),
-            Command::ToggleDebug => unimplemented!(),
-            Command::ReadGeneralRegisters => unimplemented!(),
-            Command::Kill => unimplemented!(),
-            Command::Reset => unimplemented!(),
-            //TODO: return a standard set of supported features, let Handler impls yield more?
-            Command::Query(Query::SupportedFeatures(ref _features)) => unimplemented!(),
-            _ => unsupported(writer),
+    let mut no_ack_mode = false;
+    let response = if let Done(_, command) = command(data) {
+        match command {
+            Command::EnableExtendedMode => Response::Empty,
+            Command::TargetHaltReason => Response::Empty,
+            Command::ToggleDebug => Response::Empty,
+            Command::ReadGeneralRegisters => Response::Empty,
+            Command::Kill => Response::Empty,
+            Command::Reset => Response::Empty,
+            Command::Query(Query::SupportedFeatures(features)) =>
+                handle_supported_features(handler, &features),
+            Command::Query(Query::StartNoAckMode) => {
+                no_ack_mode = true;
+                Response::String("OK")
+            }
+            _ => Response::Empty,
         }
-    } else {
-        // Return an empty response for unsupported commands.
-        unsupported(writer)
-    }
+    } else { Response::Empty };
+    write_response(response, writer)?;
+    Ok(no_ack_mode)
 }
 
 fn offset(from: &[u8], to: &[u8]) -> usize {
@@ -283,8 +310,9 @@ pub fn process_packets_from<R, W, H>(reader: R,
 W: Write,
 H: Handler
 {
-    let mut bufreader = BufReader::new(reader);
+    let mut bufreader = BufReader::with_capacity(MAX_PACKET_SIZE, reader);
     let mut done = false;
+    let mut ack_mode = true;
     while !done {
         let length = if let Ok(buf) = bufreader.fill_buf() {
             if buf.len() == 0 {
@@ -292,24 +320,15 @@ H: Handler
             }
             if let Some((len, packet)) = run_parser(buf) {
                 match packet {
-                    Packet::Data(ref data, ref checksum) => {
-                        let chk = compute_checksum(&data);
-                        if chk == *checksum {
-                            // Write an ACK
-                            if !writer.write_all(&b"+"[..]).is_ok() {
-                                //TODO: propogate errors to caller?
-                                return;
-                            }
-                            handle_packet(&data, &handler, &mut writer).unwrap();
-                        } else {
-                            // Write a NACK
-                            if !writer.write_all(&b"-"[..]).is_ok() {
-                                //TODO: propogate errors to caller?
-                                return;
-                            }
+                    Packet::Data(ref data, ref _checksum) => {
+                        // Write an ACK
+                        if ack_mode && !writer.write_all(&b"+"[..]).is_ok() {
+                            //TODO: propogate errors to caller?
+                            return;
                         }
+                        ack_mode = handle_packet(&data, &handler, &mut writer).unwrap() || ack_mode;
                     },
-                    // Just ignore ACK/NACK
+                    // Just ignore ACK/NACK/Interrupt
                     _ => {},
                 };
                 len
