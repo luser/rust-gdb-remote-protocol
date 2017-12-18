@@ -172,6 +172,17 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
               alt_complete!(tag!("MustReplyEmpty")
 */
 
+// TODO: should the caller be responsible for determining whether they actually
+// wanted a u32, or should we provide different versions of this function with
+// extra checking?
+named!(hex_value<&[u8], Option<u64>>,
+       map!(take_while!(&nom::is_hex_digit),
+            |hex| {
+                let s = str::from_utf8(hex).unwrap();
+                let r = u64::from_str_radix(s, 16);
+                r.ok()
+            }));
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -444,3 +455,11 @@ fn test_query() {
                    ])));
 }
 
+#[test]
+fn test_hex_value() {
+    assert_eq!(hex_value(&b""[..]), Done(&b""[..], None));
+    assert_eq!(hex_value(&b","[..]), Done(&b","[..], None));
+    assert_eq!(hex_value(&b"a"[..]), Done(&b""[..], Some(0xa)));
+    assert_eq!(hex_value(&b"10,"[..]), Done(&b","[..], Some(0x10)));
+    assert_eq!(hex_value(&b"ff"[..]), Done(&b""[..], Some(0xff)));
+}
