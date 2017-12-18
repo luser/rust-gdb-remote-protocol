@@ -123,6 +123,8 @@ enum Command<'a> {
     ReadGeneralRegisters,
     // Kill request.
     Kill,
+    // Read specified region of memory.
+    MemoryRead(Option<u64>, Option<u64>),
     Query(Query<'a>),
     Reset,
 }
@@ -183,6 +185,12 @@ named!(hex_value<&[u8], Option<u64>>,
                 r.ok()
             }));
 
+named!(memory_read<&[u8], (Option<u64>, Option<u64>)>,
+       preceded!(tag!("m"),
+                 separated_pair!(hex_value,
+                                 tag!(","),
+                                 hex_value)));
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -203,7 +211,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // H op thread-id
     // i [addr[,nnn]]
     | tag!("k") => { |_| Command::Kill }
-    // m addr,length
+    | memory_read => { |(addr, length)| Command::MemoryRead(addr, length) }
     // M addr,length:XX...
     // p n
     // P n...=r...
@@ -284,6 +292,10 @@ W: Write,
             Command::ReadGeneralRegisters => Response::Empty,
             Command::Kill => Response::Empty,
             Command::Reset => Response::Empty,
+            Command::MemoryRead(_, _) => {
+                // We don't implement this, so return an error.
+                Response::String("E01")
+            },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
             Command::Query(Query::StartNoAckMode) => {
