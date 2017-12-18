@@ -106,7 +106,7 @@ enum Query<'a> {
     /// Tell the remote stub about features supported by gdb, and query the stub for features
     /// it supports.
     SupportedFeatures(Vec<GDBFeatureSupported<'a>>),
-    /// Disable acknowledgements.
+    /// Disable acknowledgments.
     StartNoAckMode,
 }
 
@@ -227,7 +227,7 @@ pub trait Handler {
     fn query_supported_features() {}
 }
 
-/// Compute a checksum of `bytes`: modulo-265 sum of each byte in `bytes`.
+/// Compute a checksum of `bytes`: modulo-256 sum of each byte in `bytes`.
 fn compute_checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |sum, &b| sum.wrapping_add(b))
 }
@@ -323,7 +323,7 @@ H: Handler
                     Packet::Data(ref data, ref _checksum) => {
                         // Write an ACK
                         if ack_mode && !writer.write_all(&b"+"[..]).is_ok() {
-                            //TODO: propogate errors to caller?
+                            //TODO: propagate errors to caller?
                             return;
                         }
                         ack_mode = handle_packet(&data, &handler, &mut writer).unwrap() || ack_mode;
