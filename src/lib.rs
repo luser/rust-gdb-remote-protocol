@@ -8,7 +8,7 @@ Still needed to get a working session up with GDB (possibly incomplete):
  5. Support nqXfer:threads:read
  6. Support qAttached
  7. Support qXfer:libraries-svr4:read
- 8. Support m (memory read)
+ *. Support m (memory read)
  9. Support H (set thread)
 10. Support ? (stop reason)
 11. Support qOffsets? (not sure)
