@@ -110,6 +110,31 @@ enum Query<'a> {
     StartNoAckMode,
 }
 
+/// Part of a process id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Id {
+    /// A process or thread id.  This value may not be 0 or -1.
+    Id(u32),
+    /// A special form meaning all processes or all threads of a given
+    /// process.
+    All,
+    /// A special form meaning any process or any thread of a given
+    /// process.
+    Any,
+}
+
+/// A process identifier.  In the RSP this is just a numeric handle
+/// that is passed across the wire.  It needn't correspond to any real
+/// process id (though obviously it may be more convenient when it
+/// does).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProcessId {
+    /// The process id.
+    pub pid: Id,
+    /// The thread id.
+    pub tid: Id,
+}
+
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
 enum Command<'a> {
@@ -129,6 +154,7 @@ enum Command<'a> {
     MemoryRead(Option<u64>, Option<u64>),
     Query(Query<'a>),
     Reset,
+    PingThread(ProcessId),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -196,6 +222,21 @@ named!(memory_read<&[u8], (Option<u64>, Option<u64>)>,
 named!(read_register<&[u8], Option<u64>>,
        preceded!(tag!("p"), hex_value));
 
+/// Helper for parse_thread_id that parses a single thread-id element.
+named!(parse_thread_id_element<&[u8], Id>,
+       alt_complete!(tag!("0") => { |_| Id::Any }
+                     | tag!("-1") => { |_| Id::All }
+                     | hex_value => { |val: Option<u64>| Id::Id(val.unwrap() as u32) }));
+
+/// Parse a thread-id.
+named!(parse_thread_id<&[u8], ProcessId>,
+       alt_complete!(parse_thread_id_element => { |pid| ProcessId { pid: pid, tid: Id::Any } }
+                     | preceded!(tag!("p"),
+                                 separated_pair!(parse_thread_id_element,
+                                                 tag!("."),
+                                                 parse_thread_id_element))
+                     => {|pair: (Id, Id)| ProcessId {pid: pair.0, tid: pair.1} }));
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -230,7 +271,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // s [addr]
     // S sig[;addr]
     // t addr:PP,MM
-    // T thread-id
+    | parse_thread_id => { |thread_id| Command::PingThread(thread_id) }
     //| v_command => { |v| v }
     // X addr,length:XX...
     // ‘z type,addr,kind’
@@ -307,6 +348,9 @@ W: Write,
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
                 Response::String("OK")
+            }
+            Command::PingThread(_) => {
+                Response::String("E01")
             }
             _ => Response::Empty,
         }
