@@ -121,6 +121,8 @@ enum Command<'a> {
     ToggleDebug,
     // Read general registers.
     ReadGeneralRegisters,
+    // Read a single register.
+    ReadRegister(Option<u64>),
     // Kill request.
     Kill,
     // Read specified region of memory.
@@ -191,6 +193,9 @@ named!(memory_read<&[u8], (Option<u64>, Option<u64>)>,
                                  tag!(","),
                                  hex_value)));
 
+named!(read_register<&[u8], Option<u64>>,
+       preceded!(tag!("p"), hex_value));
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -213,6 +218,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     | tag!("k") => { |_| Command::Kill }
     | memory_read => { |(addr, length)| Command::MemoryRead(addr, length) }
     // M addr,length:XX...
+    | read_register => { |regno| Command::ReadRegister(regno) }
     // p n
     // P n...=r...
     // ‘q name params...’
@@ -292,7 +298,7 @@ W: Write,
             Command::ReadGeneralRegisters => Response::Empty,
             Command::Kill => Response::Empty,
             Command::Reset => Response::Empty,
-            Command::MemoryRead(_, _) => {
+            Command::ReadRegister(_) | Command::MemoryRead(_, _) => {
                 // We don't implement this, so return an error.
                 Response::String("E01")
             },
