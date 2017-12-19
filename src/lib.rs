@@ -93,6 +93,31 @@ enum Query<'a> {
     StartNoAckMode,
 }
 
+/// Part of a process id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Id {
+    /// A process or thread id.  This value may not be 0 or -1.
+    Id(u32),
+    /// A special form meaning all processes or all threads of a given
+    /// process.
+    All,
+    /// A special form meaning any process or any thread of a given
+    /// process.
+    Any,
+}
+
+/// A thread identifier.  In the RSP this is just a numeric handle
+/// that is passed across the wire.  It needn't correspond to any real
+/// thread or process id (though obviously it may be more convenient
+/// when it does).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThreadId {
+    /// The process id.
+    pub pid: Id,
+    /// The thread id.
+    pub tid: Id,
+}
+
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
 enum Command<'a> {
@@ -112,6 +137,7 @@ enum Command<'a> {
     MemoryRead(u64, u64),
     Query(Query<'a>),
     Reset,
+    PingThread(ThreadId),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -179,6 +205,29 @@ named!(memory_read<&[u8], (u64, u64)>,
 named!(read_register<&[u8], u64>,
        preceded!(tag!("p"), hex_value));
 
+/// Helper for parse_thread_id that parses a single thread-id element.
+named!(parse_thread_id_element<&[u8], Id>,
+       alt_complete!(tag!("0") => { |_| Id::Any }
+                     | tag!("-1") => { |_| Id::All }
+                     | hex_value => { |val: u64| Id::Id(val as u32) }));
+
+/// Parse a thread-id.
+named!(parse_thread_id<&[u8], ThreadId>,
+       alt_complete!(parse_thread_id_element => { |pid| ThreadId { pid: pid, tid: Id::Any } }
+                     | preceded!(tag!("p"),
+                                 separated_pair!(parse_thread_id_element,
+                                                 tag!("."),
+                                                 parse_thread_id_element)) => {
+                         |pair: (Id, Id)| ThreadId { pid: pair.0, tid: pair.1 }
+                     }
+                     | preceded!(tag!("p"), parse_thread_id_element) => {
+                         |id: Id| ThreadId { pid: id, tid: Id::All }
+                     }));
+
+/// Parse the T packet.
+named!(parse_ping_thread<&[u8], ThreadId>,
+       preceded!(tag!("T"), parse_thread_id));
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -213,7 +262,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // s [addr]
     // S sig[;addr]
     // t addr:PP,MM
-    // T thread-id
+    | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
     //| v_command => { |v| v }
     // X addr,length:XX...
     // ‘z type,addr,kind’
@@ -290,6 +339,9 @@ W: Write,
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
                 Response::String("OK")
+            }
+            Command::PingThread(_) => {
+                Response::String("E01")
             }
             _ => Response::Empty,
         }
@@ -463,4 +515,31 @@ fn test_hex_value() {
     assert_eq!(hex_value(&b"a"[..]), Done(&b""[..], 0xa));
     assert_eq!(hex_value(&b"10,"[..]), Done(&b","[..], 0x10));
     assert_eq!(hex_value(&b"ff"[..]), Done(&b""[..], 0xff));
+}
+
+#[test]
+fn test_parse_thread_id_element() {
+    assert_eq!(parse_thread_id_element(&b"0"[..]), Done(&b""[..], Id::Any));
+    assert_eq!(parse_thread_id_element(&b"-1"[..]), Done(&b""[..], Id::All));
+    assert_eq!(parse_thread_id_element(&b"23"[..]), Done(&b""[..], Id::Id(0x23)));
+}
+
+#[test]
+fn test_parse_thread_id() {
+    assert_eq!(parse_thread_id(&b"0"[..]),
+               Done(&b""[..], ThreadId{pid: Id::Any, tid: Id::Any}));
+    assert_eq!(parse_thread_id(&b"-1"[..]),
+               Done(&b""[..], ThreadId{pid: Id::All, tid: Id::Any}));
+    assert_eq!(parse_thread_id(&b"23"[..]),
+               Done(&b""[..], ThreadId{pid: Id::Id(0x23), tid: Id::Any}));
+
+    assert_eq!(parse_thread_id(&b"p23"[..]),
+               Done(&b""[..], ThreadId{pid: Id::Id(0x23), tid: Id::All}));
+
+    assert_eq!(parse_thread_id(&b"p0.0"[..]),
+               Done(&b""[..], ThreadId{pid: Id::Any, tid: Id::Any}));
+    assert_eq!(parse_thread_id(&b"p-1.23"[..]),
+               Done(&b""[..], ThreadId{pid: Id::All, tid: Id::Id(0x23)}));
+    assert_eq!(parse_thread_id(&b"pff.23"[..]),
+               Done(&b""[..], ThreadId{pid: Id::Id(0xff), tid: Id::Id(0x23)}));
 }
