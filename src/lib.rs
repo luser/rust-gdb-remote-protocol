@@ -1,21 +1,4 @@
-/*
-Still needed to get a working session up with GDB (possibly incomplete):
-
- *. Return a sensible feature list from qSupported.
- 2. Support vMustReplyEmpty, QStartNoAckMode.
- 3. Support qXfer:features:read for target descriptions (take xml files from GDB repo).
- 4. Support qXfer:auxv:read
- 5. Support nqXfer:threads:read
- 6. Support qAttached
- 7. Support qXfer:libraries-svr4:read
- *. Support m (memory read)
- 9. Support H (set thread)
-10. Support ? (stop reason)
-11. Support qOffsets? (not sure)
-12. Support qSymbol
-13. Support vKill
-
-*/
+// Many things are still necessary to get a working session with GDB; see Github issues.
 #[macro_use]
 extern crate nom;
 extern crate strum;
