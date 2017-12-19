@@ -105,11 +105,11 @@ enum Command<'a> {
     // Read general registers.
     ReadGeneralRegisters,
     // Read a single register.
-    ReadRegister(Option<u64>),
+    ReadRegister(u64),
     // Kill request.
     Kill,
     // Read specified region of memory.
-    MemoryRead(Option<u64>, Option<u64>),
+    MemoryRead(u64, u64),
     Query(Query<'a>),
     Reset,
 }
@@ -162,21 +162,21 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
 // TODO: should the caller be responsible for determining whether they actually
 // wanted a u32, or should we provide different versions of this function with
 // extra checking?
-named!(hex_value<&[u8], Option<u64>>,
-       map!(take_while!(&nom::is_hex_digit),
+named!(hex_value<&[u8], u64>,
+       map!(take_while1!(&nom::is_hex_digit),
             |hex| {
                 let s = str::from_utf8(hex).unwrap();
                 let r = u64::from_str_radix(s, 16);
-                r.ok()
+                r.unwrap()
             }));
 
-named!(memory_read<&[u8], (Option<u64>, Option<u64>)>,
+named!(memory_read<&[u8], (u64, u64)>,
        preceded!(tag!("m"),
                  separated_pair!(hex_value,
                                  tag!(","),
                                  hex_value)));
 
-named!(read_register<&[u8], Option<u64>>,
+named!(read_register<&[u8], u64>,
        preceded!(tag!("p"), hex_value));
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
@@ -458,9 +458,9 @@ fn test_query() {
 
 #[test]
 fn test_hex_value() {
-    assert_eq!(hex_value(&b""[..]), Done(&b""[..], None));
-    assert_eq!(hex_value(&b","[..]), Done(&b","[..], None));
-    assert_eq!(hex_value(&b"a"[..]), Done(&b""[..], Some(0xa)));
-    assert_eq!(hex_value(&b"10,"[..]), Done(&b","[..], Some(0x10)));
-    assert_eq!(hex_value(&b"ff"[..]), Done(&b""[..], Some(0xff)));
+    assert_eq!(hex_value(&b""[..]), Incomplete(Needed::Size(1)));
+    assert_eq!(hex_value(&b","[..]), Error(nom::ErrorKind::TakeWhile1));
+    assert_eq!(hex_value(&b"a"[..]), Done(&b""[..], 0xa));
+    assert_eq!(hex_value(&b"10,"[..]), Done(&b","[..], 0x10));
+    assert_eq!(hex_value(&b"ff"[..]), Done(&b""[..], 0xff));
 }
