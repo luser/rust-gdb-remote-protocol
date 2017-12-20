@@ -294,6 +294,10 @@ pub trait Handler {
     fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, SimpleError> {
         Err(SimpleError::Error)
     }
+
+    fn read_register(&self, _register: u64) -> Result<Vec<u8>, SimpleError> {
+        Err(SimpleError::Error)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -361,8 +365,11 @@ fn handle_packet<H, W>(data: &[u8],
             // We don't implement this, so return an error.
             Command::Kill(Some(_)) => Response::String("E01"),
             Command::Reset => Response::Empty,
-            Command::ReadRegister(_) => {
-                Response::String("E01")
+            Command::ReadRegister(regno) => {
+                match handler.read_register(regno) {
+                    Result::Ok(bytes) => Response::Bytes(bytes),
+                    Result::Err(_) => Response::String("E01"),
+                }
             },
             Command::ReadMemory(address, length) => {
                 match handler.read_memory(address, length) {
