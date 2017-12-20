@@ -126,8 +126,6 @@ enum Command<'a> {
     EnableExtendedMode,
     /// Indicate the reason the target halted.
     TargetHaltReason,
-    /// Toggle debug flag.
-    ToggleDebug,
     // Read general registers.
     ReadGeneralRegisters,
     // Read a single register.
@@ -243,13 +241,8 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     tag!("!") => { |_|   Command::EnableExtendedMode }
     | tag!("?") => { |_| Command::TargetHaltReason }
     // A arglen,argnum,arg,
-    // b baud
-    // B addr,mode
     // bc
     // bs
-    // c [addr]
-    // c sig[;addr]
-    | tag!("d") => { |_| Command::ToggleDebug }
     // D
     // D;pid
     // F RC,EE,CF;XX’
@@ -261,7 +254,6 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     | memory_read => { |(addr, length)| Command::MemoryRead(addr, length) }
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
-    // p n
     // P n...=r...
     // ‘q name params...’
     | query => { |q| Command::Query(q) }
@@ -269,8 +261,6 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     //TODO: support QStartNoAckMode
     | tag!("r") => { |_| Command::Reset }
     | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
-    // s [addr]
-    // S sig[;addr]
     // t addr:PP,MM
     | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
     | v_command => { |command| command }
@@ -344,7 +334,6 @@ fn handle_packet<H, W>(data: &[u8],
         match command {
             Command::EnableExtendedMode => Response::Empty,
             Command::TargetHaltReason => Response::Empty,
-            Command::ToggleDebug => Response::Empty,
             Command::ReadGeneralRegisters => Response::Empty,
             // The k packet requires no response.
             Command::Kill(None) => Response::Empty,
