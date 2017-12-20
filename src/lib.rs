@@ -140,6 +140,8 @@ enum Command<'a> {
     PingThread(ThreadId),
     CtrlC,
     UnknownVCommand,
+    /// Set the current thread for future commands, such as `ReadRegister`.
+    SetCurrentThread(ThreadId),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -235,6 +237,10 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                       |_| Command::UnknownVCommand
                   })
 }
+/// Parse the H packet.  Only `Hg` is needed, as the other forms are
+/// obsoleted by `vCont`.
+named!(parse_h_packet<&[u8], ThreadId>,
+       preceded!(tag!("Hg"), parse_thread_id));
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
@@ -248,7 +254,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // F RC,EE,CF;XX’
     | tag!("g") => { |_| Command::ReadGeneralRegisters }
     // G XX...
-    // H op thread-id
+    | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
     // i [addr[,nnn]]
     | tag!("k") => { |_| Command::Kill(None) }
     | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
@@ -300,6 +306,10 @@ pub trait Handler {
     }
 
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, SimpleError> {
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    }
+
+    fn set_current_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
         Err(SimpleError::Error(NOT_IMPLEMENTED))
     }
 }
@@ -383,6 +393,12 @@ fn handle_packet<H, W>(data: &[u8],
             Command::ReadMemory(address, length) => {
                 match handler.read_memory(address, length) {
                     Result::Ok(bytes) => Response::Bytes(bytes),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
+                }
+            },
+            Command::SetCurrentThread(thread_id) => {
+                match handler.set_current_thread(thread_id) {
+                    Result::Ok(_) => Response::String("OK"),
                     Result::Err(SimpleError::Error(val)) => Response::Error(val),
                 }
             },
