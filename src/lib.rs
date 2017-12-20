@@ -61,16 +61,16 @@ enum GDBFeature {
     QThreadEvents,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Known<'a> {
     Yes(GDBFeature),
     No(&'a str),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct GDBFeatureSupported<'a>(Known<'a>, FeatureSupported<'a>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum FeatureSupported<'a> {
     Yes,
     No,
@@ -79,7 +79,7 @@ enum FeatureSupported<'a> {
     Value(&'a str),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Query<'a> {
     /// Return the current thread ID.
     CurrentThread,
@@ -120,6 +120,7 @@ pub struct ThreadId {
 
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
+#[derive(Clone, Debug, PartialEq)]
 enum Command<'a> {
     /// Enable extended mode.
     EnableExtendedMode,
