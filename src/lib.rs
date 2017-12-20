@@ -319,11 +319,6 @@ fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
     bytes.iter().fold(init, |sum, &b| sum.wrapping_add(b))
 }
 
-/// Compute a checksum of `bytes`: modulo-256 sum of each byte in `bytes`.
-fn compute_checksum(bytes: &[u8]) -> u8 {
-    compute_checksum_incremental(bytes, 0)
-}
-
 enum Response<'a> {
     Empty,
     Ok,
@@ -357,37 +352,72 @@ impl<'a> From<Vec<u8>> for Response<'a>
     }
 }
 
+// A writer which sends a single packet.
+struct PacketWriter<'a, W>
+    where W: Write,
+          W: 'a
+{
+    writer: &'a mut W,
+    checksum: u8,
+}
+
+impl<'a, W> PacketWriter<'a, W>
+    where W: Write
+{
+    fn new(writer: &'a mut W) -> PacketWriter<'a, W> {
+        PacketWriter {
+            writer: writer,
+            checksum: 0,
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        write!(self.writer, "#{:02x}", self.checksum)?;
+        self.checksum = 0;
+        Ok(())
+    }
+}
+
+impl<'a, W> Write for PacketWriter<'a, W>
+    where W: Write
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let count = self.writer.write(buf)?;
+        self.checksum = compute_checksum_incremental(&buf[0..count], self.checksum);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     where W: Write,
 {
+    write!(writer, "$")?;
+
+    let mut writer = PacketWriter::new(writer);
     match response {
         Response::Ok => {
-            let s = "OK";
-            write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+            write!(writer, "OK")?;
         }
         Response::Empty => {
-            writer.write_all(&b"$#00"[..])
         }
         Response::Error(val) => {
-            let response = format!("E${:02x}", val);
-            write!(writer, "${}#{:02x}", response, compute_checksum(response.as_bytes()))
+            write!(writer, "E{:02x}", val)?;
         }
         Response::String(s) => {
-            write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+            write!(writer, "{}", s)?;
         }
         Response::Bytes(bytes) => {
-            // This would all be simpler if we wrapped |writer| with
-            // something to handle packets and checksumming.
-            writer.write_all(b"$")?;
-            let mut checksum = 0;
             for byte in bytes {
-                let hex = format!("{:02x}", byte);
-                checksum = compute_checksum_incremental(hex.as_bytes(), checksum);
-                writer.write_all(hex.as_bytes())?;
+                write!(writer, "{:02x}", byte)?;
             }
-            write!(writer, "#{:02x}", checksum)
         }
     }
+
+    writer.finish()
 }
 
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
@@ -500,8 +530,9 @@ pub fn process_packets_from<R, W, H>(reader: R,
 
 #[test]
 fn test_compute_checksum() {
-    assert_eq!(compute_checksum(&b""[..]), 0);
-    assert_eq!(compute_checksum(&b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..]),
+    assert_eq!(compute_checksum_incremental(&b""[..], 0), 0);
+    assert_eq!(compute_checksum_incremental(&b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..],
+                                0),
                0xb5);
 }
 
@@ -644,4 +675,17 @@ fn test_parse_v_commands() {
                Done(&b""[..], Command::UnknownVCommand));
     assert_eq!(v_command(&b"vFile:close:0"[..]),
                Done(&b""[..], Command::UnknownVCommand));
+}
+
+#[test]
+fn test_write_response() {
+    fn write_one(input: Response) -> io::Result<String> {
+        let mut result = Vec::new();
+        write_response(input, &mut result)?;
+        Ok(String::from_utf8(result).unwrap())
+    }
+
+    assert_eq!(write_one(Response::Empty).unwrap(), "$#00");
+    assert_eq!(write_one(Response::Ok).unwrap(), "$OK#9a");
+    assert_eq!(write_one(Response::Error(1)).unwrap(), "$E01#a6");
 }
