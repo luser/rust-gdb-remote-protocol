@@ -134,7 +134,7 @@ enum Command<'a> {
     // packet was used, and None when the k packet was used.
     Kill(Option<u64>),
     // Read specified region of memory.
-    MemoryRead(u64, u64),
+    ReadMemory(u64, u64),
     Query(Query<'a>),
     Reset,
     PingThread(ThreadId),
@@ -192,7 +192,7 @@ named!(hex_value<&[u8], u64>,
                 r.unwrap()
             }));
 
-named!(memory_read<&[u8], (u64, u64)>,
+named!(read_memory<&[u8], (u64, u64)>,
        preceded!(tag!("m"),
                  separated_pair!(hex_value,
                                  tag!(","),
@@ -251,7 +251,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // H op thread-id
     // i [addr[,nnn]]
     | tag!("k") => { |_| Command::Kill(None) }
-    | memory_read => { |(addr, length)| Command::MemoryRead(addr, length) }
+    | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
     // P n...=r...
@@ -340,7 +340,7 @@ fn handle_packet<H, W>(data: &[u8],
             // We don't implement this, so return an error.
             Command::Kill(Some(_)) => Response::String("E01"),
             Command::Reset => Response::Empty,
-            Command::ReadRegister(_) | Command::MemoryRead(_, _) => {
+            Command::ReadRegister(_) | Command::ReadMemory(_, _) => {
                 // We don't implement this, so return an error.
                 Response::String("E01")
             },
