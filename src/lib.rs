@@ -289,7 +289,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
 
 const NOT_IMPLEMENTED: u8 = 0xff;
 
-pub enum SimpleError {
+pub enum Error {
     // The meaning of the value is not defined by the protocol; so it
     // can be used by a handler for debugging.
     Error(u8)
@@ -298,20 +298,20 @@ pub enum SimpleError {
 pub trait Handler {
     fn query_supported_features() {}
 
-    fn ping_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn ping_thread(&self, _id: ThreadId) -> Result<(), Error> {
+        Err(Error::Error(NOT_IMPLEMENTED))
     }
 
-    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
+        Err(Error::Error(NOT_IMPLEMENTED))
     }
 
-    fn read_register(&self, _register: u64) -> Result<Vec<u8>, SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
+        Err(Error::Error(NOT_IMPLEMENTED))
     }
 
-    fn set_current_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
+        Err(Error::Error(NOT_IMPLEMENTED))
     }
 }
 
@@ -332,13 +332,13 @@ enum Response<'a> {
     Bytes(Vec<u8>),
 }
 
-impl<'a, T> From<Result<T, SimpleError>> for Response<'a>
+impl<'a, T> From<Result<T, Error>> for Response<'a>
     where Response<'a>: From<T>
 {
-    fn from(result: Result<T, SimpleError>) -> Self {
+    fn from(result: Result<T, Error>) -> Self {
         match result {
             Result::Ok(val) => val.into(),
-            Result::Err(SimpleError::Error(val)) => Response::Error(val),
+            Result::Err(Error::Error(val)) => Response::Error(val),
         }
     }
 }
