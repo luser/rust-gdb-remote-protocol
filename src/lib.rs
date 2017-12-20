@@ -131,8 +131,9 @@ enum Command<'a> {
     ReadGeneralRegisters,
     // Read a single register.
     ReadRegister(u64),
-    // Kill request.
-    Kill,
+    // Kill request.  The argument is the optional PID, provided when the vKill
+    // packet was used, and None when the k packet was used.
+    Kill(Option<u64>),
     // Read specified region of memory.
     MemoryRead(u64, u64),
     Query(Query<'a>),
@@ -228,6 +229,9 @@ named!(parse_thread_id<&[u8], ThreadId>,
 named!(parse_ping_thread<&[u8], ThreadId>,
        preceded!(tag!("T"), parse_thread_id));
 
+named!(vkill<&[u8], u64>,
+       preceded!(tag!("vKill;"), hex_value));
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -247,7 +251,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // G XX...
     // H op thread-id
     // i [addr[,nnn]]
-    | tag!("k") => { |_| Command::Kill }
+    | tag!("k") => { |_| Command::Kill(None) }
     | memory_read => { |(addr, length)| Command::MemoryRead(addr, length) }
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
@@ -263,7 +267,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // S sig[;addr]
     // t addr:PP,MM
     | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
-    //| v_command => { |v| v }
+    | vkill => { |pid| Command::Kill(Some(pid)) }
     // X addr,length:XX...
     // ‘z type,addr,kind’
     // ‘Z type,addr,kind’
@@ -328,7 +332,10 @@ W: Write,
             Command::TargetHaltReason => Response::Empty,
             Command::ToggleDebug => Response::Empty,
             Command::ReadGeneralRegisters => Response::Empty,
-            Command::Kill => Response::Empty,
+            // The k packet requires no response.
+            Command::Kill(None) => Response::Empty,
+            // We don't implement this, so return an error.
+            Command::Kill(Some(_)) => Response::String("E01"),
             Command::Reset => Response::Empty,
             Command::ReadRegister(_) | Command::MemoryRead(_, _) => {
                 // We don't implement this, so return an error.
