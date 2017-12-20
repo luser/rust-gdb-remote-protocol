@@ -322,7 +322,7 @@ fn handle_packet<H, W>(data: &[u8],
                        handler: &H,
                        writer: &mut W) -> io::Result<bool>
     where H: Handler,
-W: Write,
+          W: Write,
 {
     println!("Command: {}", str::from_utf8(data).unwrap());
     let mut no_ack_mode = false;
@@ -378,8 +378,8 @@ pub fn process_packets_from<R, W, H>(reader: R,
                                      mut writer: W,
                                      handler: H)
     where R: Read,
-W: Write,
-H: Handler
+          W: Write,
+          H: Handler
 {
     let mut bufreader = BufReader::with_capacity(MAX_PACKET_SIZE, reader);
     let mut done = false;
