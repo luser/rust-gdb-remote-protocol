@@ -140,6 +140,8 @@ enum Command<'a> {
     Query(Query<'a>),
     Reset,
     PingThread(ThreadId),
+    CtrlC,
+    UnknownVCommand,
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -180,12 +182,6 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                   | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
                   )
 }
-/*
-fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    preceded!(i, tag!("v"),
-              CtrlC
-              alt_complete!(tag!("MustReplyEmpty")
-*/
 
 // TODO: should the caller be responsible for determining whether they actually
 // wanted a u32, or should we provide different versions of this function with
@@ -230,8 +226,17 @@ named!(parse_thread_id<&[u8], ThreadId>,
 named!(parse_ping_thread<&[u8], ThreadId>,
        preceded!(tag!("T"), parse_thread_id));
 
-named!(vkill<&[u8], u64>,
-       preceded!(tag!("vKill;"), hex_value));
+fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    alt_complete!(i,
+                  tag!("vCtrlC") => { |_| Command::CtrlC }
+                  | preceded!(tag!("vKill;"), hex_value) => {
+                      |pid| Command::Kill(Some(pid))
+                  }
+                  // TODO: log the unknown command for debugging purposes.
+                  | preceded!(tag!("v"), take_till!(|_| { false })) => {
+                      |_| Command::UnknownVCommand
+                  })
+}
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
@@ -268,7 +273,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // S sig[;addr]
     // t addr:PP,MM
     | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
-    | vkill => { |pid| Command::Kill(Some(pid)) }
+    | v_command => { |command| command }
     // X addr,length:XX...
     // ‘z type,addr,kind’
     // ‘Z type,addr,kind’
@@ -351,6 +356,8 @@ fn handle_packet<H, W>(data: &[u8],
             Command::PingThread(_) => {
                 Response::String("E01")
             }
+            Command::CtrlC => Response::String("E01"),
+            Command::UnknownVCommand => Response::Empty,
             _ => Response::Empty,
         }
     } else { Response::Empty };
@@ -550,4 +557,16 @@ fn test_parse_thread_id() {
                Done(&b""[..], ThreadId{pid: Id::All, tid: Id::Id(0x23)}));
     assert_eq!(parse_thread_id(&b"pff.23"[..]),
                Done(&b""[..], ThreadId{pid: Id::Id(0xff), tid: Id::Id(0x23)}));
+}
+
+#[test]
+fn test_parse_v_commands() {
+    assert_eq!(v_command(&b"vKill;33"[..]),
+               Done(&b""[..], Command::Kill(Some(0x33))));
+    assert_eq!(v_command(&b"vCtrlC"[..]),
+               Done(&b""[..], Command::CtrlC));
+    assert_eq!(v_command(&b"vMustReplyEmpty"[..]),
+               Done(&b""[..], Command::UnknownVCommand));
+    assert_eq!(v_command(&b"vFile:close:0"[..]),
+               Done(&b""[..], Command::UnknownVCommand));
 }
