@@ -290,16 +290,25 @@ pub trait Handler {
     fn ping_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
         Err(SimpleError::Error)
     }
+
+    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, SimpleError> {
+        Err(SimpleError::Error)
+    }
+}
+
+fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
+    bytes.iter().fold(init, |sum, &b| sum.wrapping_add(b))
 }
 
 /// Compute a checksum of `bytes`: modulo-256 sum of each byte in `bytes`.
 fn compute_checksum(bytes: &[u8]) -> u8 {
-    bytes.iter().fold(0, |sum, &b| sum.wrapping_add(b))
+    compute_checksum_incremental(bytes, 0)
 }
 
 enum Response<'a> {
     Empty,
     String(&'a str),
+    Bytes(Vec<u8>),
 }
 
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
@@ -311,6 +320,18 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         }
         Response::String(s) => {
             write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+        }
+        Response::Bytes(bytes) => {
+            // This would all be simpler if we wrapped |writer| with
+            // something to handle packets and checksumming.
+            writer.write_all(b"$")?;
+            let mut checksum = 0;
+            for byte in bytes {
+                let hex = format!("{:02x}", byte);
+                checksum = compute_checksum_incremental(hex.as_bytes(), checksum);
+                writer.write_all(hex.as_bytes())?;
+            }
+            write!(writer, "#{:02x}", checksum)
         }
     }
 }
@@ -340,9 +361,14 @@ fn handle_packet<H, W>(data: &[u8],
             // We don't implement this, so return an error.
             Command::Kill(Some(_)) => Response::String("E01"),
             Command::Reset => Response::Empty,
-            Command::ReadRegister(_) | Command::ReadMemory(_, _) => {
-                // We don't implement this, so return an error.
+            Command::ReadRegister(_) => {
                 Response::String("E01")
+            },
+            Command::ReadMemory(address, length) => {
+                match handler.read_memory(address, length) {
+                    Result::Ok(bytes) => Response::Bytes(bytes),
+                    Result::Err(_) => Response::String("E01"),
+                }
             },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
