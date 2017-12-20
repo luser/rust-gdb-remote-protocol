@@ -7,6 +7,7 @@ extern crate strum_macros;
 
 use nom::IResult::*;
 use nom::{IResult, Needed};
+use std::convert::From;
 use std::io::{self,BufRead,BufReader,Read,Write};
 use std::str::{self, FromStr};
 
@@ -325,15 +326,45 @@ fn compute_checksum(bytes: &[u8]) -> u8 {
 
 enum Response<'a> {
     Empty,
+    Ok,
     Error(u8),
     String(&'a str),
     Bytes(Vec<u8>),
+}
+
+impl<'a, T> From<Result<T, SimpleError>> for Response<'a>
+    where Response<'a>: From<T>
+{
+    fn from(result: Result<T, SimpleError>) -> Self {
+        match result {
+            Result::Ok(val) => val.into(),
+            Result::Err(SimpleError::Error(val)) => Response::Error(val),
+        }
+    }
+}
+
+impl<'a> From<()> for Response<'a>
+{
+    fn from(_: ()) -> Self {
+        Response::Ok
+    }
+}
+
+impl<'a> From<Vec<u8>> for Response<'a>
+{
+    fn from(response: Vec<u8>) -> Self {
+        Response::Bytes(response)
+    }
 }
 
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     where W: Write,
 {
     match response {
+        Response::Ok => {
+            let s = "OK";
+            write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+        }
         Response::Empty => {
             writer.write_all(&b"$#00"[..])
         }
@@ -385,36 +416,22 @@ fn handle_packet<H, W>(data: &[u8],
             Command::Kill(Some(_)) => Response::Error(NOT_IMPLEMENTED),
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
-                match handler.read_register(regno) {
-                    Result::Ok(bytes) => Response::Bytes(bytes),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
+                handler.read_register(regno).into()
             },
             Command::ReadMemory(address, length) => {
-                match handler.read_memory(address, length) {
-                    Result::Ok(bytes) => Response::Bytes(bytes),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
+                handler.read_memory(address, length).into()
             },
             Command::SetCurrentThread(thread_id) => {
-                match handler.set_current_thread(thread_id) {
-                    Result::Ok(_) => Response::String("OK"),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
+                handler.set_current_thread(thread_id).into()
             },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
-                Response::String("OK")
+                Response::Ok
             }
-            Command::PingThread(thread_id) => {
-                match handler.ping_thread(thread_id) {
-                    Result::Ok(_) => Response::String("OK"),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
-            }
-            Command::CtrlC => Response::String("E01"),
+            Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
+            Command::CtrlC => Response::Error(NOT_IMPLEMENTED),
             Command::UnknownVCommand => Response::Empty,
             _ => Response::Empty,
         }
