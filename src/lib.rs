@@ -280,23 +280,27 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          )
 }
 
+const NOT_IMPLEMENTED: u8 = 0xff;
+
 pub enum SimpleError {
-    Error
+    // The meaning of the value is not defined by the protocol; so it
+    // can be used by a handler for debugging.
+    Error(u8)
 }
 
 pub trait Handler {
     fn query_supported_features() {}
 
     fn ping_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
-        Err(SimpleError::Error)
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
     }
 
     fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, SimpleError> {
-        Err(SimpleError::Error)
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
     }
 
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, SimpleError> {
-        Err(SimpleError::Error)
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
     }
 }
 
@@ -311,6 +315,7 @@ fn compute_checksum(bytes: &[u8]) -> u8 {
 
 enum Response<'a> {
     Empty,
+    Error(u8),
     String(&'a str),
     Bytes(Vec<u8>),
 }
@@ -321,6 +326,10 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     match response {
         Response::Empty => {
             writer.write_all(&b"$#00"[..])
+        }
+        Response::Error(val) => {
+            let response = format!("E${:02x}", val);
+            write!(writer, "${}#{:02x}", response, compute_checksum(response.as_bytes()))
         }
         Response::String(s) => {
             write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
@@ -363,18 +372,18 @@ fn handle_packet<H, W>(data: &[u8],
             // The k packet requires no response.
             Command::Kill(None) => Response::Empty,
             // We don't implement this, so return an error.
-            Command::Kill(Some(_)) => Response::String("E01"),
+            Command::Kill(Some(_)) => Response::Error(NOT_IMPLEMENTED),
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
                 match handler.read_register(regno) {
                     Result::Ok(bytes) => Response::Bytes(bytes),
-                    Result::Err(_) => Response::String("E01"),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
                 }
             },
             Command::ReadMemory(address, length) => {
                 match handler.read_memory(address, length) {
                     Result::Ok(bytes) => Response::Bytes(bytes),
-                    Result::Err(_) => Response::String("E01"),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
                 }
             },
             Command::Query(Query::SupportedFeatures(features)) =>
@@ -386,7 +395,7 @@ fn handle_packet<H, W>(data: &[u8],
             Command::PingThread(thread_id) => {
                 match handler.ping_thread(thread_id) {
                     Result::Ok(_) => Response::String("OK"),
-                    Result::Err(_) => Response::String("E01"),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
                 }
             }
             Command::CtrlC => Response::String("E01"),
