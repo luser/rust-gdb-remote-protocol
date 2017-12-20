@@ -290,8 +290,16 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          )
 }
 
+pub enum SimpleError {
+    Error
+}
+
 pub trait Handler {
     fn query_supported_features() {}
+
+    fn ping_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
+        Err(SimpleError::Error)
+    }
 }
 
 /// Compute a checksum of `bytes`: modulo-256 sum of each byte in `bytes`.
@@ -353,8 +361,11 @@ fn handle_packet<H, W>(data: &[u8],
                 no_ack_mode = true;
                 Response::String("OK")
             }
-            Command::PingThread(_) => {
-                Response::String("E01")
+            Command::PingThread(thread_id) => {
+                match handler.ping_thread(thread_id) {
+                    Result::Ok(_) => Response::String("OK"),
+                    Result::Err(_) => Response::String("E01"),
+                }
             }
             Command::CtrlC => Response::String("E01"),
             Command::UnknownVCommand => Response::Empty,
