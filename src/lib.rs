@@ -7,6 +7,7 @@ extern crate strum_macros;
 
 use nom::IResult::*;
 use nom::{IResult, Needed};
+use std::convert::From;
 use std::io::{self,BufRead,BufReader,Read,Write};
 use std::str::{self, FromStr};
 
@@ -286,31 +287,34 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          )
 }
 
-const NOT_IMPLEMENTED: u8 = 0xff;
-
-pub enum SimpleError {
+pub enum Error {
     // The meaning of the value is not defined by the protocol; so it
     // can be used by a handler for debugging.
-    Error(u8)
+    Error(u8),
+    Unimplemented,
 }
 
 pub trait Handler {
     fn query_supported_features() {}
 
-    fn ping_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn kill(&self, _pid: Option<u64>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
     }
 
-    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn ping_thread(&self, _id: ThreadId) -> Result<(), Error> {
+        Err(Error::Unimplemented)
     }
 
-    fn read_register(&self, _register: u64) -> Result<Vec<u8>, SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
+        Err(Error::Unimplemented)
     }
 
-    fn set_current_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
-        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
+        Err(Error::Unimplemented)
     }
 }
 
@@ -318,45 +322,106 @@ fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
     bytes.iter().fold(init, |sum, &b| sum.wrapping_add(b))
 }
 
-/// Compute a checksum of `bytes`: modulo-256 sum of each byte in `bytes`.
-fn compute_checksum(bytes: &[u8]) -> u8 {
-    compute_checksum_incremental(bytes, 0)
-}
-
 enum Response<'a> {
     Empty,
+    Ok,
     Error(u8),
     String(&'a str),
     Bytes(Vec<u8>),
 }
 
+impl<'a, T> From<Result<T, Error>> for Response<'a>
+    where Response<'a>: From<T>
+{
+    fn from(result: Result<T, Error>) -> Self {
+        match result {
+            Result::Ok(val) => val.into(),
+            Result::Err(Error::Error(val)) => Response::Error(val),
+            Result::Err(Error::Unimplemented) => Response::Empty,
+        }
+    }
+}
+
+impl<'a> From<()> for Response<'a>
+{
+    fn from(_: ()) -> Self {
+        Response::Ok
+    }
+}
+
+impl<'a> From<Vec<u8>> for Response<'a>
+{
+    fn from(response: Vec<u8>) -> Self {
+        Response::Bytes(response)
+    }
+}
+
+// A writer which sends a single packet.
+struct PacketWriter<'a, W>
+    where W: Write,
+          W: 'a
+{
+    writer: &'a mut W,
+    checksum: u8,
+}
+
+impl<'a, W> PacketWriter<'a, W>
+    where W: Write
+{
+    fn new(writer: &'a mut W) -> PacketWriter<'a, W> {
+        PacketWriter {
+            writer: writer,
+            checksum: 0,
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        write!(self.writer, "#{:02x}", self.checksum)?;
+        self.checksum = 0;
+        Ok(())
+    }
+}
+
+impl<'a, W> Write for PacketWriter<'a, W>
+    where W: Write
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let count = self.writer.write(buf)?;
+        self.checksum = compute_checksum_incremental(&buf[0..count], self.checksum);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     where W: Write,
 {
+    write!(writer, "$")?;
+
+    let mut writer = PacketWriter::new(writer);
     match response {
+        Response::Ok => {
+            write!(writer, "OK")?;
+        }
         Response::Empty => {
-            writer.write_all(&b"$#00"[..])
         }
         Response::Error(val) => {
-            let response = format!("E${:02x}", val);
-            write!(writer, "${}#{:02x}", response, compute_checksum(response.as_bytes()))
+            write!(writer, "E{:02x}", val)?;
         }
         Response::String(s) => {
-            write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+            write!(writer, "{}", s)?;
         }
         Response::Bytes(bytes) => {
-            // This would all be simpler if we wrapped |writer| with
-            // something to handle packets and checksumming.
-            writer.write_all(b"$")?;
-            let mut checksum = 0;
             for byte in bytes {
-                let hex = format!("{:02x}", byte);
-                checksum = compute_checksum_incremental(hex.as_bytes(), checksum);
-                writer.write_all(hex.as_bytes())?;
+                write!(writer, "{:02x}", byte)?;
             }
-            write!(writer, "#{:02x}", checksum)
         }
     }
+
+    writer.finish()
 }
 
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
@@ -379,42 +444,34 @@ fn handle_packet<H, W>(data: &[u8],
             Command::EnableExtendedMode => Response::Empty,
             Command::TargetHaltReason => Response::Empty,
             Command::ReadGeneralRegisters => Response::Empty,
-            // The k packet requires no response.
-            Command::Kill(None) => Response::Empty,
-            // We don't implement this, so return an error.
-            Command::Kill(Some(_)) => Response::Error(NOT_IMPLEMENTED),
+            Command::Kill(None) => {
+                // The k packet requires no response, so purposely
+                // ignore the result.
+                drop(handler.kill(None));
+                Response::Empty
+            },
+            Command::Kill(pid) => {
+                Response::from(handler.kill(pid))
+            },
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
-                match handler.read_register(regno) {
-                    Result::Ok(bytes) => Response::Bytes(bytes),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
+                handler.read_register(regno).into()
             },
             Command::ReadMemory(address, length) => {
-                match handler.read_memory(address, length) {
-                    Result::Ok(bytes) => Response::Bytes(bytes),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
+                handler.read_memory(address, length).into()
             },
             Command::SetCurrentThread(thread_id) => {
-                match handler.set_current_thread(thread_id) {
-                    Result::Ok(_) => Response::String("OK"),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
+                handler.set_current_thread(thread_id).into()
             },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
-                Response::String("OK")
+                Response::Ok
             }
-            Command::PingThread(thread_id) => {
-                match handler.ping_thread(thread_id) {
-                    Result::Ok(_) => Response::String("OK"),
-                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
-                }
-            }
-            Command::CtrlC => Response::String("E01"),
+            Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
+            // Empty means "not implemented".
+            Command::CtrlC => Response::Empty,
             Command::UnknownVCommand => Response::Empty,
             _ => Response::Empty,
         }
@@ -463,7 +520,10 @@ pub fn process_packets_from<R, W, H>(reader: R,
                             //TODO: propagate errors to caller?
                             return;
                         }
-                        ack_mode = handle_packet(&data, &handler, &mut writer).unwrap() || ack_mode;
+                        let no_ack_mode = handle_packet(&data, &handler, &mut writer).unwrap_or(false);
+                        if no_ack_mode {
+                            ack_mode = false;
+                        }
                     },
                     // Just ignore ACK/NACK/Interrupt
                     _ => {},
@@ -483,8 +543,9 @@ pub fn process_packets_from<R, W, H>(reader: R,
 
 #[test]
 fn test_compute_checksum() {
-    assert_eq!(compute_checksum(&b""[..]), 0);
-    assert_eq!(compute_checksum(&b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..]),
+    assert_eq!(compute_checksum_incremental(&b""[..], 0), 0);
+    assert_eq!(compute_checksum_incremental(&b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..],
+                                0),
                0xb5);
 }
 
@@ -627,4 +688,17 @@ fn test_parse_v_commands() {
                Done(&b""[..], Command::UnknownVCommand));
     assert_eq!(v_command(&b"vFile:close:0"[..]),
                Done(&b""[..], Command::UnknownVCommand));
+}
+
+#[test]
+fn test_write_response() {
+    fn write_one(input: Response) -> io::Result<String> {
+        let mut result = Vec::new();
+        write_response(input, &mut result)?;
+        Ok(String::from_utf8(result).unwrap())
+    }
+
+    assert_eq!(write_one(Response::Empty).unwrap(), "$#00");
+    assert_eq!(write_one(Response::Ok).unwrap(), "$OK#9a");
+    assert_eq!(write_one(Response::Error(1)).unwrap(), "$E01#a6");
 }
