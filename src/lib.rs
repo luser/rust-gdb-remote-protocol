@@ -85,8 +85,9 @@ enum Query<'a> {
     /// Return the current thread ID.
     CurrentThread,
     /// Compute the CRC checksum of a block of memory.
-    #[allow(unused)]
-    CRC { addr: u64, length: u64 },
+    // Uncomment this when qC is implemented.
+    // #[allow(unused)]
+    // CRC { addr: u64, length: u64 },
     /// Tell the remote stub about features supported by gdb, and query the stub for features
     /// it supports.
     SupportedFeatures(Vec<GDBFeatureSupported<'a>>),
@@ -310,6 +311,10 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    fn current_thread(&self) -> Result<Option<ThreadId>, Error> {
+        Ok(None)
+    }
+
     fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
@@ -325,6 +330,7 @@ enum Response<'a> {
     Error(u8),
     String(&'a str),
     Bytes(Vec<u8>),
+    CurrentThread(Option<ThreadId>),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -350,6 +356,13 @@ impl<'a> From<Vec<u8>> for Response<'a>
 {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
+    }
+}
+
+impl<'a> From<Option<ThreadId>> for Response<'a>
+{
+    fn from(response: Option<ThreadId>) -> Self {
+        Response::CurrentThread(response)
     }
 }
 
@@ -393,6 +406,23 @@ impl<'a, W> Write for PacketWriter<'a, W>
     }
 }
 
+fn write_thread_id<W>(writer: &mut W, thread_id: ThreadId) -> io::Result<()>
+    where W: Write
+{
+    write!(writer, "p")?;
+    match thread_id.pid {
+        Id::All => write!(writer, "-1"),
+        Id::Any => write!(writer, "0"),
+        Id::Id(num) => write!(writer, "{:x}", num),
+    }?;
+    write!(writer, ".")?;
+    match thread_id.tid {
+        Id::All => write!(writer, "-1"),
+        Id::Any => write!(writer, "0"),
+        Id::Id(num) => write!(writer, "{:x}", num),
+    }
+}
+
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     where W: Write,
 {
@@ -415,6 +445,13 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
             for byte in bytes {
                 write!(writer, "{:02x}", byte)?;
             }
+        }
+        Response::CurrentThread(tid) => {
+            // This is incorrect if multiprocess hasn't yet been enabled.
+            match tid {
+                None => write!(writer, "OK")?,
+                Some(thread_id) => write_thread_id(&mut writer, thread_id)?,
+            };
         }
     }
 
@@ -460,17 +497,21 @@ fn handle_packet<H, W>(data: &[u8],
             Command::SetCurrentThread(thread_id) => {
                 handler.set_current_thread(thread_id).into()
             },
+
+            Command::Query(Query::CurrentThread) => {
+                handler.current_thread().into()
+            },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
                 Response::Ok
             }
+
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
             Command::CtrlC => Response::Empty,
             Command::UnknownVCommand => Response::Empty,
-            _ => Response::Empty,
         }
     } else { Response::Empty };
     write_response(response, writer)?;
