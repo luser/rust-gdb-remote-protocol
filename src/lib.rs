@@ -497,7 +497,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    Response::String("PacketSize=65536;QStartNoAckMode+")
+    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+")
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
