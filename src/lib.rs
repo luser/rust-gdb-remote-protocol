@@ -262,10 +262,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
     // P n...=r...
-    // ‘q name params...’
     | query => { |q| Command::Query(q) }
-    // ‘Q name params...’
-    //TODO: support QStartNoAckMode
     | tag!("r") => { |_| Command::Reset }
     | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
     // t addr:PP,MM
