@@ -521,7 +521,7 @@ fn handle_packet<H, W>(data: &[u8],
                 Response::Empty
             },
             Command::Kill(pid) => {
-                Response::from(handler.kill(pid))
+                handler.kill(pid).into()
             },
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
