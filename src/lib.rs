@@ -82,6 +82,11 @@ enum FeatureSupported<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Query<'a> {
+    /// Return the attached state of the indicated process.
+    // FIXME the PID only needs to be optional in the
+    // non-multi-process case, which we aren't supporting; but we
+    // don't send multiprocess+ in the feature response yet.
+    Attached(Option<u64>),
     /// Return the current thread ID.
     CurrentThread,
     /// Compute the CRC checksum of a block of memory.
@@ -182,6 +187,10 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                       |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
                   }
                   | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
+                  | preceded!(tag!("qAttached:"), hex_value) => {
+                      |value| Query::Attached(Some(value))
+                  }
+                  | tag!("qAttached") => { |_| Query::Attached(None) }
                   )
 }
 
@@ -292,8 +301,20 @@ pub enum Error {
     Unimplemented,
 }
 
+/// The `qAttached` packet lets the client distinguish between
+/// attached and created processes, so that it knows whether to send a
+/// detach request when disconnecting.
+pub enum ProcessType {
+    /// The process already existed and was attached to.
+    Attached,
+    /// The process was created by the server.
+    Created,
+}
+
 pub trait Handler {
     fn query_supported_features() {}
+
+    fn attached(&self, _pid: Option<u64>) -> Result<ProcessType, Error>;
 
     fn kill(&self, _pid: Option<u64>) -> Result<(), Error> {
         Err(Error::Unimplemented)
@@ -331,6 +352,7 @@ enum Response<'a> {
     String(&'a str),
     Bytes(Vec<u8>),
     CurrentThread(Option<ThreadId>),
+    ProcessType(ProcessType),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -363,6 +385,13 @@ impl<'a> From<Option<ThreadId>> for Response<'a>
 {
     fn from(response: Option<ThreadId>) -> Self {
         Response::CurrentThread(response)
+    }
+}
+
+impl<'a> From<ProcessType> for Response<'a>
+{
+    fn from(process_type: ProcessType) -> Self {
+        Response::ProcessType(process_type)
     }
 }
 
@@ -453,6 +482,12 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                 Some(thread_id) => write_thread_id(&mut writer, thread_id)?,
             };
         }
+        Response::ProcessType(process_type) => {
+            match process_type {
+                ProcessType::Attached => write!(writer, "1")?,
+                ProcessType::Created => write!(writer, "0")?,
+            };
+        }
     }
 
     writer.finish()
@@ -498,6 +533,9 @@ fn handle_packet<H, W>(data: &[u8],
                 handler.set_current_thread(thread_id).into()
             },
 
+            Command::Query(Query::Attached(pid)) => {
+                handler.attached(pid).into()
+            },
             Command::Query(Query::CurrentThread) => {
                 handler.current_thread().into()
             },
