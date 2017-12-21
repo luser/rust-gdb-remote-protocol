@@ -287,35 +287,34 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          )
 }
 
-const NOT_IMPLEMENTED: u8 = 0xff;
-
 pub enum Error {
     // The meaning of the value is not defined by the protocol; so it
     // can be used by a handler for debugging.
-    Error(u8)
+    Error(u8),
+    Unimplemented,
 }
 
 pub trait Handler {
     fn query_supported_features() {}
 
     fn kill(&self, _pid: Option<u64>) -> Result<(), Error> {
-        Err(Error::Error(NOT_IMPLEMENTED))
+        Err(Error::Unimplemented)
     }
 
     fn ping_thread(&self, _id: ThreadId) -> Result<(), Error> {
-        Err(Error::Error(NOT_IMPLEMENTED))
+        Err(Error::Unimplemented)
     }
 
     fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
-        Err(Error::Error(NOT_IMPLEMENTED))
+        Err(Error::Unimplemented)
     }
 
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
-        Err(Error::Error(NOT_IMPLEMENTED))
+        Err(Error::Unimplemented)
     }
 
     fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
-        Err(Error::Error(NOT_IMPLEMENTED))
+        Err(Error::Unimplemented)
     }
 }
 
@@ -338,6 +337,7 @@ impl<'a, T> From<Result<T, Error>> for Response<'a>
         match result {
             Result::Ok(val) => val.into(),
             Result::Err(Error::Error(val)) => Response::Error(val),
+            Result::Err(Error::Unimplemented) => Response::Empty,
         }
     }
 }
@@ -470,7 +470,8 @@ fn handle_packet<H, W>(data: &[u8],
                 Response::Ok
             }
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
-            Command::CtrlC => Response::Error(NOT_IMPLEMENTED),
+            // Empty means "not implemented".
+            Command::CtrlC => Response::Empty,
             Command::UnknownVCommand => Response::Empty,
             _ => Response::Empty,
         }
