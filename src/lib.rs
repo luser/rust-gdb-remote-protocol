@@ -416,6 +416,7 @@ impl<'a, W> PacketWriter<'a, W>
 
     fn finish(&mut self) -> io::Result<()> {
         write!(self.writer, "#{:02x}", self.checksum)?;
+        self.writer.flush()?;
         self.checksum = 0;
         Ok(())
     }
