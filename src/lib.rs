@@ -126,8 +126,6 @@ enum Command<'a> {
     EnableExtendedMode,
     /// Indicate the reason the target halted.
     TargetHaltReason,
-    /// Toggle debug flag.
-    ToggleDebug,
     // Read general registers.
     ReadGeneralRegisters,
     // Read a single register.
@@ -136,12 +134,14 @@ enum Command<'a> {
     // packet was used, and None when the k packet was used.
     Kill(Option<u64>),
     // Read specified region of memory.
-    MemoryRead(u64, u64),
+    ReadMemory(u64, u64),
     Query(Query<'a>),
     Reset,
     PingThread(ThreadId),
     CtrlC,
     UnknownVCommand,
+    /// Set the current thread for future commands, such as `ReadRegister`.
+    SetCurrentThread(ThreadId),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -194,7 +194,7 @@ named!(hex_value<&[u8], u64>,
                 r.unwrap()
             }));
 
-named!(memory_read<&[u8], (u64, u64)>,
+named!(read_memory<&[u8], (u64, u64)>,
        preceded!(tag!("m"),
                  separated_pair!(hex_value,
                                  tag!(","),
@@ -237,31 +237,29 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                       |_| Command::UnknownVCommand
                   })
 }
+/// Parse the H packet.  Only `Hg` is needed, as the other forms are
+/// obsoleted by `vCont`.
+named!(parse_h_packet<&[u8], ThreadId>,
+       preceded!(tag!("Hg"), parse_thread_id));
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
     tag!("!") => { |_|   Command::EnableExtendedMode }
     | tag!("?") => { |_| Command::TargetHaltReason }
     // A arglen,argnum,arg,
-    // b baud
-    // B addr,mode
     // bc
     // bs
-    // c [addr]
-    // c sig[;addr]
-    | tag!("d") => { |_| Command::ToggleDebug }
     // D
     // D;pid
     // F RC,EE,CF;XX’
     | tag!("g") => { |_| Command::ReadGeneralRegisters }
     // G XX...
-    // H op thread-id
+    | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
     // i [addr[,nnn]]
     | tag!("k") => { |_| Command::Kill(None) }
-    | memory_read => { |(addr, length)| Command::MemoryRead(addr, length) }
+    | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
-    // p n
     // P n...=r...
     // ‘q name params...’
     | query => { |q| Command::Query(q) }
@@ -269,8 +267,6 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     //TODO: support QStartNoAckMode
     | tag!("r") => { |_| Command::Reset }
     | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
-    // s [addr]
-    // S sig[;addr]
     // t addr:PP,MM
     | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
     | v_command => { |command| command }
@@ -290,18 +286,48 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          )
 }
 
+const NOT_IMPLEMENTED: u8 = 0xff;
+
+pub enum SimpleError {
+    // The meaning of the value is not defined by the protocol; so it
+    // can be used by a handler for debugging.
+    Error(u8)
+}
+
 pub trait Handler {
     fn query_supported_features() {}
+
+    fn ping_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    }
+
+    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, SimpleError> {
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    }
+
+    fn read_register(&self, _register: u64) -> Result<Vec<u8>, SimpleError> {
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    }
+
+    fn set_current_thread(&self, _id: ThreadId) -> Result<(), SimpleError> {
+        Err(SimpleError::Error(NOT_IMPLEMENTED))
+    }
+}
+
+fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
+    bytes.iter().fold(init, |sum, &b| sum.wrapping_add(b))
 }
 
 /// Compute a checksum of `bytes`: modulo-256 sum of each byte in `bytes`.
 fn compute_checksum(bytes: &[u8]) -> u8 {
-    bytes.iter().fold(0, |sum, &b| sum.wrapping_add(b))
+    compute_checksum_incremental(bytes, 0)
 }
 
 enum Response<'a> {
     Empty,
+    Error(u8),
     String(&'a str),
+    Bytes(Vec<u8>),
 }
 
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
@@ -311,8 +337,24 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         Response::Empty => {
             writer.write_all(&b"$#00"[..])
         }
+        Response::Error(val) => {
+            let response = format!("E${:02x}", val);
+            write!(writer, "${}#{:02x}", response, compute_checksum(response.as_bytes()))
+        }
         Response::String(s) => {
             write!(writer, "${}#{:02x}", s, compute_checksum(s.as_bytes()))
+        }
+        Response::Bytes(bytes) => {
+            // This would all be simpler if we wrapped |writer| with
+            // something to handle packets and checksumming.
+            writer.write_all(b"$")?;
+            let mut checksum = 0;
+            for byte in bytes {
+                let hex = format!("{:02x}", byte);
+                checksum = compute_checksum_incremental(hex.as_bytes(), checksum);
+                writer.write_all(hex.as_bytes())?;
+            }
+            write!(writer, "#{:02x}", checksum)
         }
     }
 }
@@ -336,16 +378,29 @@ fn handle_packet<H, W>(data: &[u8],
         match command {
             Command::EnableExtendedMode => Response::Empty,
             Command::TargetHaltReason => Response::Empty,
-            Command::ToggleDebug => Response::Empty,
             Command::ReadGeneralRegisters => Response::Empty,
             // The k packet requires no response.
             Command::Kill(None) => Response::Empty,
             // We don't implement this, so return an error.
-            Command::Kill(Some(_)) => Response::String("E01"),
+            Command::Kill(Some(_)) => Response::Error(NOT_IMPLEMENTED),
             Command::Reset => Response::Empty,
-            Command::ReadRegister(_) | Command::MemoryRead(_, _) => {
-                // We don't implement this, so return an error.
-                Response::String("E01")
+            Command::ReadRegister(regno) => {
+                match handler.read_register(regno) {
+                    Result::Ok(bytes) => Response::Bytes(bytes),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
+                }
+            },
+            Command::ReadMemory(address, length) => {
+                match handler.read_memory(address, length) {
+                    Result::Ok(bytes) => Response::Bytes(bytes),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
+                }
+            },
+            Command::SetCurrentThread(thread_id) => {
+                match handler.set_current_thread(thread_id) {
+                    Result::Ok(_) => Response::String("OK"),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
+                }
             },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
@@ -353,8 +408,11 @@ fn handle_packet<H, W>(data: &[u8],
                 no_ack_mode = true;
                 Response::String("OK")
             }
-            Command::PingThread(_) => {
-                Response::String("E01")
+            Command::PingThread(thread_id) => {
+                match handler.ping_thread(thread_id) {
+                    Result::Ok(_) => Response::String("OK"),
+                    Result::Err(SimpleError::Error(val)) => Response::Error(val),
+                }
             }
             Command::CtrlC => Response::String("E01"),
             Command::UnknownVCommand => Response::Empty,
