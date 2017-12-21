@@ -298,6 +298,10 @@ pub enum Error {
 pub trait Handler {
     fn query_supported_features() {}
 
+    fn kill(&self, _pid: Option<u64>) -> Result<(), Error> {
+        Err(Error::Error(NOT_IMPLEMENTED))
+    }
+
     fn ping_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Error(NOT_IMPLEMENTED))
     }
@@ -440,10 +444,15 @@ fn handle_packet<H, W>(data: &[u8],
             Command::EnableExtendedMode => Response::Empty,
             Command::TargetHaltReason => Response::Empty,
             Command::ReadGeneralRegisters => Response::Empty,
-            // The k packet requires no response.
-            Command::Kill(None) => Response::Empty,
-            // We don't implement this, so return an error.
-            Command::Kill(Some(_)) => Response::Error(NOT_IMPLEMENTED),
+            Command::Kill(None) => {
+                // The k packet requires no response, so purposely
+                // ignore the result.
+                drop(handler.kill(None));
+                Response::Empty
+            },
+            Command::Kill(pid) => {
+                Response::from(handler.kill(pid))
+            },
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
                 handler.read_register(regno).into()
