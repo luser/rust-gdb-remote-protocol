@@ -519,7 +519,10 @@ pub fn process_packets_from<R, W, H>(reader: R,
                             //TODO: propagate errors to caller?
                             return;
                         }
-                        ack_mode = handle_packet(&data, &handler, &mut writer).unwrap() || ack_mode;
+                        let no_ack_mode = handle_packet(&data, &handler, &mut writer).unwrap_or(false);
+                        if no_ack_mode {
+                            ack_mode = false;
+                        }
                     },
                     // Just ignore ACK/NACK/Interrupt
                     _ => {},
