@@ -18,6 +18,7 @@ impl Handler for NoopHandler {
 #[cfg_attr(test, allow(dead_code))]
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:2424").unwrap();
+    println!("Listening on port 2424");
     for res in listener.incoming() {
         println!("Got connection");
         if let Ok(stream) = res {
