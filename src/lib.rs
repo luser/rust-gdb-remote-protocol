@@ -313,10 +313,19 @@ pub enum ProcessType {
 
 /// The possible reasons for a thread to stop.
 pub enum StopReason {
+    /// Process stopped due to a signal.
     Signal(u8),
+    /// The process with the given PID exited with the given status.
     Exited(u64, u8),
+    /// The process with the given PID terminated due to the given
+    /// signal.
     ExitedWithSignal(u64, u8),
+    /// The indicated thread exited with the given status.
     ThreadExited(ThreadId, u64),
+    /// There are no remaining resumed threads.
+    // FIXME we should report the 'no-resumed' feature in response to
+    // qSupports before emitting this; and we should also check that
+    // the client knows about it.
     NoMoreThreads,
     // FIXME implement these as well.  These are used by the T packet,
     // which can also send along registers.
