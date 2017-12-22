@@ -618,6 +618,9 @@ fn handle_packet<H, W>(data: &[u8],
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
             Command::CtrlC => Response::Empty,
+
+            // Unknown v commands are required to give an empty
+            // response.
             Command::UnknownVCommand => Response::Empty,
         }
     } else { Response::Empty };
