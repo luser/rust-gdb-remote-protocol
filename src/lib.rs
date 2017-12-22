@@ -311,6 +311,41 @@ pub enum ProcessType {
     Created,
 }
 
+/// The possible reasons for a thread to stop.
+pub enum StopReason {
+    /// Process stopped due to a signal.
+    Signal(u8),
+    /// The process with the given PID exited with the given status.
+    Exited(u64, u8),
+    /// The process with the given PID terminated due to the given
+    /// signal.
+    ExitedWithSignal(u64, u8),
+    /// The indicated thread exited with the given status.
+    ThreadExited(ThreadId, u64),
+    /// There are no remaining resumed threads.
+    // FIXME we should report the 'no-resumed' feature in response to
+    // qSupports before emitting this; and we should also check that
+    // the client knows about it.
+    NoMoreThreads,
+    // FIXME implement these as well.  These are used by the T packet,
+    // which can also send along registers.
+    // Watchpoint(u64),
+    // ReadWatchpoint(u64),
+    // AccessWatchpoint(u64),
+    // SyscallEntry(u8),
+    // SyscallExit(u8),
+    // LibraryChange,
+    // ReplayLogStart,
+    // ReplayLogEnd,
+    // SoftwareBreakpoint,
+    // HardwareBreakpoint,
+    // Fork(ThreadId),
+    // VFork(ThreadId),
+    // VForkDone,
+    // Exec(String),
+    // NewThread(ThreadId),
+}
+
 pub trait Handler {
     fn query_supported_features() {}
 
@@ -339,6 +374,8 @@ pub trait Handler {
     fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
+
+    fn halt_reason(&self) -> Result<StopReason, Error>;
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -353,6 +390,7 @@ enum Response<'a> {
     Bytes(Vec<u8>),
     CurrentThread(Option<ThreadId>),
     ProcessType(ProcessType),
+    Stopped(StopReason),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -395,6 +433,13 @@ impl<'a> From<ProcessType> for Response<'a>
     }
 }
 
+impl<'a> From<StopReason> for Response<'a>
+{
+    fn from(reason: StopReason) -> Self {
+        Response::Stopped(reason)
+    }
+}
+
 // A writer which sends a single packet.
 struct PacketWriter<'a, W>
     where W: Write,
@@ -416,6 +461,7 @@ impl<'a, W> PacketWriter<'a, W>
 
     fn finish(&mut self) -> io::Result<()> {
         write!(self.writer, "#{:02x}", self.checksum)?;
+        self.writer.flush()?;
         self.checksum = 0;
         Ok(())
     }
@@ -488,6 +534,26 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                 ProcessType::Created => write!(writer, "0")?,
             };
         }
+        Response::Stopped(stop_reason) => {
+            match stop_reason {
+                StopReason::Signal(signo) => write!(writer, "S{:02x}", signo)?,
+                StopReason::Exited(pid, status) => {
+                    // Non-multi-process gdb only accepts 2 hex digits
+                    // for the status.
+                    write!(writer, "W{:02x};process:{:x}", status, pid)?;
+                },
+                StopReason::ExitedWithSignal(pid, status) => {
+                    // Non-multi-process gdb only accepts 2 hex digits
+                    // for the status.
+                    write!(writer, "X{:x};process:{:x}", status, pid)?;
+                },
+                StopReason::ThreadExited(thread_id, status) => {
+                    write!(writer, "w{:x};", status)?;
+                    write_thread_id(&mut writer, thread_id)?;
+                },
+                StopReason::NoMoreThreads => write!(writer, "N")?,
+            }
+        }
     }
 
     writer.finish()
@@ -496,7 +562,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    Response::String("PacketSize=65536;QStartNoAckMode+")
+    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+")
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
@@ -511,7 +577,9 @@ fn handle_packet<H, W>(data: &[u8],
     let response = if let Done(_, command) = command(data) {
         match command {
             Command::EnableExtendedMode => Response::Empty,
-            Command::TargetHaltReason => Response::Empty,
+            Command::TargetHaltReason => {
+                handler.halt_reason().into()
+            },
             Command::ReadGeneralRegisters => Response::Empty,
             Command::Kill(None) => {
                 // The k packet requires no response, so purposely
@@ -520,7 +588,7 @@ fn handle_packet<H, W>(data: &[u8],
                 Response::Empty
             },
             Command::Kill(pid) => {
-                Response::from(handler.kill(pid))
+                handler.kill(pid).into()
             },
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
