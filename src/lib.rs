@@ -576,7 +576,8 @@ fn handle_packet<H, W>(data: &[u8],
     let mut no_ack_mode = false;
     let response = if let Done(_, command) = command(data) {
         match command {
-            Command::EnableExtendedMode => Response::Empty,
+            // We unconditionally support extended mode.
+            Command::EnableExtendedMode => Response::Ok,
             Command::TargetHaltReason => {
                 handler.halt_reason().into()
             },
