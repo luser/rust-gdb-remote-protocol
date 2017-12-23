@@ -144,6 +144,8 @@ enum Command<'a> {
     Kill(Option<u64>),
     // Read specified region of memory.
     ReadMemory(u64, u64),
+    // Write specified region of memory.
+    WriteMemory(u64, u64, Vec<u8>),
     Query(Query<'a>),
     Reset,
     PingThread(ThreadId),
@@ -206,6 +208,30 @@ named!(hex_value<&[u8], u64>,
                 let r = u64::from_str_radix(s, 16);
                 r.unwrap()
             }));
+
+named!(hex_digit<&[u8], char>,
+       one_of!("0123456789abcdefABCDEF"));
+
+named!(hex_byte<&[u8], u8>,
+       do_parse!(
+           digit0: hex_digit >>
+           digit1: hex_digit >>
+           (((16 * digit0.to_digit(16).unwrap() + digit1.to_digit(16).unwrap())) as u8)
+       )
+);
+
+named!(hex_byte_sequence<&[u8], Vec<u8>>,
+       many1!(hex_byte));
+
+named!(write_memory<&[u8], (u64, u64, Vec<u8>)>,
+       complete!(do_parse!(
+           tag!("M") >>
+           address: hex_value >>
+           tag!(",") >>
+           length: hex_value >>
+           tag!(":") >>
+           data: hex_byte_sequence >>
+           (address, length, data))));
 
 named!(read_memory<&[u8], (u64, u64)>,
        preceded!(tag!("m"),
@@ -278,6 +304,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // i [addr[,nnn]]
     | tag!("k") => { |_| Command::Kill(None) }
     | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
+    | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
     // P n...=r...
@@ -373,6 +400,10 @@ pub trait Handler {
     }
 
     fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn write_memory(&self, _address: u64, _length: u64, _bytes: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
@@ -610,6 +641,16 @@ fn handle_packet<H, W>(data: &[u8],
             },
             Command::ReadMemory(address, length) => {
                 handler.read_memory(address, length).into()
+            },
+            Command::WriteMemory(address, length, bytes) => {
+                // The docs don't really say what to do if the given
+                // length disagrees with the number of bytes sent, so
+                // just error if they disagree.
+                if length as usize != bytes.len() {
+                    Response::Error(1)
+                } else {
+                    handler.write_memory(address, length, &bytes[..]).into()
+                }
             },
             Command::SetCurrentThread(thread_id) => {
                 handler.set_current_thread(thread_id).into()
@@ -860,6 +901,12 @@ fn test_parse_d_packets() {
                Done(&b""[..], None));
     assert_eq!(parse_d_packet(&b"D;f0"[..]),
                Done(&b""[..], Some(240)));
+}
+
+#[test]
+fn test_parse_write_memory() {
+    assert_eq!(write_memory(&b"Mf0,3:ff0102"[..]),
+               Done(&b""[..], (240, 3, vec!(255, 1, 2))));
 }
 
 #[test]
