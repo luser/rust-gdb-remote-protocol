@@ -89,6 +89,8 @@ enum Query<'a> {
     Attached(Option<u64>),
     /// Return the current thread ID.
     CurrentThread,
+    /// Search memory for some bytes.
+    SearchMemory { address: u64, length: u64, bytes: Vec<u8> },
     /// Compute the CRC checksum of a block of memory.
     // Uncomment this when qC is implemented.
     // #[allow(unused)]
@@ -181,6 +183,16 @@ fn gdbfeaturesupported<'a>(i: &'a [u8]) -> IResult<&'a [u8], GDBFeatureSupported
     })
 }
 
+named!(q_search_memory<&[u8], (u64, u64, Vec<u8>)>,
+       complete!(do_parse!(
+           tag!("qSearch:memory:") >>
+           address: hex_value >>
+           tag!(";") >>
+           length: hex_value >>
+           tag!(";") >>
+           data: hex_byte_sequence >>
+           (address, length, data))));
+
 fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     alt_complete!(i,
                   tag!("qC") => { |_| Query::CurrentThread }
@@ -189,6 +201,9 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                                         separated_list_complete!(tag!(";"),
                                                                  gdbfeaturesupported))) => {
                       |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
+                  }
+                  | q_search_memory => {
+                      |(address, length, bytes)| Query::SearchMemory { address, length, bytes }
                   }
                   | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
                   | preceded!(tag!("qAttached:"), hex_value) => {
@@ -419,6 +434,11 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    fn search_memory(&self, _address: u64, _length: u64, _bytes: &[u8])
+                     -> Result<Option<u64>, Error> {
+        Err(Error::Unimplemented)
+    }
+
     fn halt_reason(&self) -> Result<StopReason, Error>;
 }
 
@@ -435,6 +455,7 @@ enum Response<'a> {
     CurrentThread(Option<ThreadId>),
     ProcessType(ProcessType),
     Stopped(StopReason),
+    SearchResult(Option<u64>),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -456,7 +477,7 @@ impl<'a> From<()> for Response<'a>
     }
 }
 
-impl<'a> From<Vec<u8>> for Response<'a>
+    impl<'a> From<Vec<u8>> for Response<'a>
 {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
@@ -467,6 +488,15 @@ impl<'a> From<Option<ThreadId>> for Response<'a>
 {
     fn from(response: Option<ThreadId>) -> Self {
         Response::CurrentThread(response)
+    }
+}
+
+// This seems a bit specific -- what if some other handler method
+// wants to return an Option<u64>?
+impl<'a> From<Option<u64>> for Response<'a>
+{
+    fn from(response: Option<u64>) -> Self {
+        Response::SearchResult(response)
     }
 }
 
@@ -578,6 +608,12 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                 ProcessType::Created => write!(writer, "0")?,
             };
         }
+        Response::SearchResult(maybe_addr) => {
+            match maybe_addr {
+                Some(addr) => write!(writer, "1,{:x}", addr)?,
+                None => write!(writer, "0")?,
+            }
+        }
         Response::Stopped(stop_reason) => {
             match stop_reason {
                 StopReason::Signal(signo) => write!(writer, "S{:02x}", signo)?,
@@ -664,6 +700,9 @@ fn handle_packet<H, W>(data: &[u8],
             },
             Command::Query(Query::CurrentThread) => {
                 handler.current_thread().into()
+            },
+            Command::Query(Query::SearchMemory { address, length, bytes }) => {
+                handler.search_memory(address, length, &bytes[..]).into()
             },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
