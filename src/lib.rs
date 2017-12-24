@@ -652,7 +652,10 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
             // This is incorrect if multiprocess hasn't yet been enabled.
             match tid {
                 None => write!(writer, "OK")?,
-                Some(thread_id) => write_thread_id(&mut writer, thread_id)?,
+                Some(thread_id) => {
+                    write!(writer, "QC")?;
+                    write_thread_id(&mut writer, thread_id)?;
+                }
             };
         }
         Response::ProcessType(process_type) => {
@@ -1051,4 +1054,10 @@ fn test_write_response() {
     assert_eq!(write_one(Response::Empty).unwrap(), "$#00");
     assert_eq!(write_one(Response::Ok).unwrap(), "$OK#9a");
     assert_eq!(write_one(Response::Error(1)).unwrap(), "$E01#a6");
+
+    assert_eq!(write_one(Response::CurrentThread(Some(ThreadId {
+        pid: Id::Id(255),
+        tid: Id::Id(1)
+    }))).unwrap(),
+               "$QCpff.1#2f");
 }
