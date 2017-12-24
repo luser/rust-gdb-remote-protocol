@@ -89,6 +89,8 @@ enum Query<'a> {
     Attached(Option<u64>),
     /// Return the current thread ID.
     CurrentThread,
+    /// Search memory for some bytes.
+    SearchMemory { address: u64, length: u64, bytes: Vec<u8> },
     /// Compute the CRC checksum of a block of memory.
     // Uncomment this when qC is implemented.
     // #[allow(unused)]
@@ -144,6 +146,8 @@ enum Command<'a> {
     Kill(Option<u64>),
     // Read specified region of memory.
     ReadMemory(u64, u64),
+    // Write specified region of memory.
+    WriteMemory(u64, u64, Vec<u8>),
     Query(Query<'a>),
     Reset,
     PingThread(ThreadId),
@@ -179,6 +183,16 @@ fn gdbfeaturesupported<'a>(i: &'a [u8]) -> IResult<&'a [u8], GDBFeatureSupported
     })
 }
 
+named!(q_search_memory<&[u8], (u64, u64, Vec<u8>)>,
+       complete!(do_parse!(
+           tag!("qSearch:memory:") >>
+           address: hex_value >>
+           tag!(";") >>
+           length: hex_value >>
+           tag!(";") >>
+           data: hex_byte_sequence >>
+           (address, length, data))));
+
 fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     alt_complete!(i,
                   tag!("qC") => { |_| Query::CurrentThread }
@@ -187,6 +201,9 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                                         separated_list_complete!(tag!(";"),
                                                                  gdbfeaturesupported))) => {
                       |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
+                  }
+                  | q_search_memory => {
+                      |(address, length, bytes)| Query::SearchMemory { address, length, bytes }
                   }
                   | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
                   | preceded!(tag!("qAttached:"), hex_value) => {
@@ -206,6 +223,30 @@ named!(hex_value<&[u8], u64>,
                 let r = u64::from_str_radix(s, 16);
                 r.unwrap()
             }));
+
+named!(hex_digit<&[u8], char>,
+       one_of!("0123456789abcdefABCDEF"));
+
+named!(hex_byte<&[u8], u8>,
+       do_parse!(
+           digit0: hex_digit >>
+           digit1: hex_digit >>
+           (((16 * digit0.to_digit(16).unwrap() + digit1.to_digit(16).unwrap())) as u8)
+       )
+);
+
+named!(hex_byte_sequence<&[u8], Vec<u8>>,
+       many1!(hex_byte));
+
+named!(write_memory<&[u8], (u64, u64, Vec<u8>)>,
+       complete!(do_parse!(
+           tag!("M") >>
+           address: hex_value >>
+           tag!(",") >>
+           length: hex_value >>
+           tag!(":") >>
+           data: hex_byte_sequence >>
+           (address, length, data))));
 
 named!(read_memory<&[u8], (u64, u64)>,
        preceded!(tag!("m"),
@@ -278,6 +319,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // i [addr[,nnn]]
     | tag!("k") => { |_| Command::Kill(None) }
     | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
+    | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
     // M addr,length:XX...
     | read_register => { |regno| Command::ReadRegister(regno) }
     // P n...=r...
@@ -376,6 +418,10 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    fn write_memory(&self, _address: u64, _length: u64, _bytes: &[u8]) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
@@ -385,6 +431,11 @@ pub trait Handler {
     }
 
     fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn search_memory(&self, _address: u64, _length: u64, _bytes: &[u8])
+                     -> Result<Option<u64>, Error> {
         Err(Error::Unimplemented)
     }
 
@@ -404,6 +455,7 @@ enum Response<'a> {
     CurrentThread(Option<ThreadId>),
     ProcessType(ProcessType),
     Stopped(StopReason),
+    SearchResult(Option<u64>),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -425,7 +477,7 @@ impl<'a> From<()> for Response<'a>
     }
 }
 
-impl<'a> From<Vec<u8>> for Response<'a>
+    impl<'a> From<Vec<u8>> for Response<'a>
 {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
@@ -436,6 +488,15 @@ impl<'a> From<Option<ThreadId>> for Response<'a>
 {
     fn from(response: Option<ThreadId>) -> Self {
         Response::CurrentThread(response)
+    }
+}
+
+// This seems a bit specific -- what if some other handler method
+// wants to return an Option<u64>?
+impl<'a> From<Option<u64>> for Response<'a>
+{
+    fn from(response: Option<u64>) -> Self {
+        Response::SearchResult(response)
     }
 }
 
@@ -547,6 +608,12 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                 ProcessType::Created => write!(writer, "0")?,
             };
         }
+        Response::SearchResult(maybe_addr) => {
+            match maybe_addr {
+                Some(addr) => write!(writer, "1,{:x}", addr)?,
+                None => write!(writer, "0")?,
+            }
+        }
         Response::Stopped(stop_reason) => {
             match stop_reason {
                 StopReason::Signal(signo) => write!(writer, "S{:02x}", signo)?,
@@ -611,6 +678,16 @@ fn handle_packet<H, W>(data: &[u8],
             Command::ReadMemory(address, length) => {
                 handler.read_memory(address, length).into()
             },
+            Command::WriteMemory(address, length, bytes) => {
+                // The docs don't really say what to do if the given
+                // length disagrees with the number of bytes sent, so
+                // just error if they disagree.
+                if length as usize != bytes.len() {
+                    Response::Error(1)
+                } else {
+                    handler.write_memory(address, length, &bytes[..]).into()
+                }
+            },
             Command::SetCurrentThread(thread_id) => {
                 handler.set_current_thread(thread_id).into()
             },
@@ -623,6 +700,9 @@ fn handle_packet<H, W>(data: &[u8],
             },
             Command::Query(Query::CurrentThread) => {
                 handler.current_thread().into()
+            },
+            Command::Query(Query::SearchMemory { address, length, bytes }) => {
+                handler.search_memory(address, length, &bytes[..]).into()
             },
             Command::Query(Query::SupportedFeatures(features)) =>
                 handle_supported_features(handler, &features),
@@ -860,6 +940,12 @@ fn test_parse_d_packets() {
                Done(&b""[..], None));
     assert_eq!(parse_d_packet(&b"D;f0"[..]),
                Done(&b""[..], Some(240)));
+}
+
+#[test]
+fn test_parse_write_memory() {
+    assert_eq!(write_memory(&b"Mf0,3:ff0102"[..]),
+               Done(&b""[..], (240, 3, vec!(255, 1, 2))));
 }
 
 #[test]
