@@ -104,6 +104,8 @@ enum Query<'a> {
     Invoke(Vec<u8>),
     /// Enable or disable address space randomization.
     AddressRandomization(bool),
+    /// Enable or disable catching of syscalls.
+    CatchSyscalls(Option<Vec<u64>>),
 }
 
 /// Part of a process id.
@@ -223,6 +225,11 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                   | tag!("qAttached") => { |_| Query::Attached(None) }
                   | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
                   | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
+                  | tag!("QCatchSyscalls:0") => { |_| Query::CatchSyscalls(None) }
+                  | preceded!(tag!("QCatchSyscalls:1"),
+                              many0!(preceded!(tag!(";"), hex_value))) => {
+                      |syscalls| Query::CatchSyscalls(Some(syscalls))
+                  }
                   )
 }
 
@@ -496,6 +503,15 @@ pub trait Handler {
     fn set_address_randomization(&self, _enable: bool) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Start or stop catch syscalls.  If the argument is `None`, then
+    /// stop catchin syscalls.  Otherwise, start catching syscalls.
+    /// If any syscalls are specified, then only those need be caught;
+    /// however, it is ok to report syscall stops that aren't in the
+    /// list if that is convenient.
+    fn catch_syscalls(&self, _syscalls: Option<Vec<u64>>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -708,7 +724,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+")
+    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+;QCatchSyscalls+")
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
@@ -799,6 +815,9 @@ fn handle_packet<H, W>(data: &[u8],
             }
             Command::Query(Query::AddressRandomization(randomize)) => {
                 handler.set_address_randomization(randomize).into()
+            }
+            Command::Query(Query::CatchSyscalls(calls)) => {
+                handler.catch_syscalls(calls).into()
             }
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
@@ -1050,6 +1069,16 @@ fn test_parse_randomization() {
                Done(&b""[..], Query::AddressRandomization(true)));
     assert_eq!(query(&b"QDisableRandomization:1"[..]),
                Done(&b""[..], Query::AddressRandomization(false)));
+}
+
+#[test]
+fn test_parse_syscalls() {
+    assert_eq!(query(&b"QCatchSyscalls:0"[..]),
+               Done(&b""[..], Query::CatchSyscalls(None)));
+    assert_eq!(query(&b"QCatchSyscalls:1"[..]),
+               Done(&b""[..], Query::CatchSyscalls(Some(vec!()))));
+    assert_eq!(query(&b"QCatchSyscalls:1;0;1;ff"[..]),
+               Done(&b""[..], Query::CatchSyscalls(Some(vec!(0, 1, 255)))));
 }
 
 #[test]
