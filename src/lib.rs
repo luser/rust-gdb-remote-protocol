@@ -143,6 +143,8 @@ enum Command<'a> {
     ReadGeneralRegisters,
     // Read a single register.
     ReadRegister(u64),
+    // Write a single register.
+    WriteRegister(u64, Vec<u8>),
     // Kill request.  The argument is the optional PID, provided when the vKill
     // packet was used, and None when the k packet was used.
     Kill(Option<u64>),
@@ -262,6 +264,12 @@ named!(read_memory<&[u8], (u64, u64)>,
 named!(read_register<&[u8], u64>,
        preceded!(tag!("p"), hex_value));
 
+named!(write_register<&[u8], (u64, Vec<u8>)>,
+       preceded!(tag!("P"),
+                 separated_pair!(hex_value,
+                                 tag!("="),
+                                 hex_byte_sequence)));
+
 /// Helper for parse_thread_id that parses a single thread-id element.
 named!(parse_thread_id_element<&[u8], Id>,
        alt_complete!(tag!("0") => { |_| Id::Any }
@@ -320,6 +328,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
          | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
          | read_register => { |regno| Command::ReadRegister(regno) }
+         | write_register => { |(regno, bytes)| Command::WriteRegister(regno, bytes) }
          | query => { |q| Command::Query(q) }
          | tag!("r") => { |_| Command::Reset }
          | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
@@ -406,6 +415,10 @@ pub trait Handler {
     }
 
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn write_register(&self, _register: u64, _contents: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
@@ -668,6 +681,9 @@ fn handle_packet<H, W>(data: &[u8],
             Command::Reset => Response::Empty,
             Command::ReadRegister(regno) => {
                 handler.read_register(regno).into()
+            },
+            Command::WriteRegister(regno, bytes) => {
+                handler.write_register(regno, &bytes[..]).into()
             },
             Command::ReadMemory(address, length) => {
                 handler.read_memory(address, length).into()
@@ -953,6 +969,12 @@ fn test_parse_write_memory() {
 fn test_parse_qrcmd() {
     assert_eq!(query(&b"qRcmd,736f6d657468696e67"[..]),
                Done(&b""[..], Query::Invoke(b"something".to_vec())));
+}
+
+#[test]
+fn test_parse_write_register() {
+    assert_eq!(write_register(&b"Pff=1020"[..]),
+               Done(&b""[..], (255, vec!(16, 32))));
 }
 
 #[test]
