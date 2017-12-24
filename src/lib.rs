@@ -100,6 +100,9 @@ enum Query<'a> {
     SupportedFeatures(Vec<GDBFeatureSupported<'a>>),
     /// Disable acknowledgments.
     StartNoAckMode,
+    /// Invoke a command on the server.  The server defines commands
+    /// and how to parse them.
+    Invoke(Vec<u8>),
 }
 
 /// Part of a process id.
@@ -201,6 +204,9 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                                         separated_list_complete!(tag!(";"),
                                                                  gdbfeaturesupported))) => {
                       |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
+                  }
+                  | preceded!(tag!("qRcmd,"), hex_byte_sequence) => {
+                      |bytes| Query::Invoke(bytes)
                   }
                   | q_search_memory => {
                       |(address, length, bytes)| Query::SearchMemory { address, length, bytes }
@@ -440,6 +446,10 @@ pub trait Handler {
     }
 
     fn halt_reason(&self) -> Result<StopReason, Error>;
+
+    fn invoke(&self, &[u8]) -> Result<String, Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -451,6 +461,7 @@ enum Response<'a> {
     Ok,
     Error(u8),
     String(&'a str),
+    Output(String),
     Bytes(Vec<u8>),
     CurrentThread(Option<ThreadId>),
     ProcessType(ProcessType),
@@ -477,7 +488,7 @@ impl<'a> From<()> for Response<'a>
     }
 }
 
-    impl<'a> From<Vec<u8>> for Response<'a>
+impl<'a> From<Vec<u8>> for Response<'a>
 {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
@@ -590,6 +601,12 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         Response::String(s) => {
             write!(writer, "{}", s)?;
         }
+        Response::Output(s) => {
+            write!(writer, "O")?;
+            for byte in s.as_bytes() {
+                write!(writer, "{:02x}", byte)?;
+            }
+        }
         Response::Bytes(bytes) => {
             for byte in bytes {
                 write!(writer, "{:02x}", byte)?;
@@ -700,6 +717,13 @@ fn handle_packet<H, W>(data: &[u8],
             },
             Command::Query(Query::CurrentThread) => {
                 handler.current_thread().into()
+            },
+            Command::Query(Query::Invoke(cmd)) => {
+                match handler.invoke(&cmd[..]) {
+                    Result::Ok(val) => Response::Output(val),
+                    Result::Err(Error::Error(val)) => Response::Error(val),
+                    Result::Err(Error::Unimplemented) => Response::Empty,
+                }
             },
             Command::Query(Query::SearchMemory { address, length, bytes }) => {
                 handler.search_memory(address, length, &bytes[..]).into()
@@ -946,6 +970,12 @@ fn test_parse_d_packets() {
 fn test_parse_write_memory() {
     assert_eq!(write_memory(&b"Mf0,3:ff0102"[..]),
                Done(&b""[..], (240, 3, vec!(255, 1, 2))));
+}
+
+#[test]
+fn test_parse_qrcmd() {
+    assert_eq!(query(&b"qRcmd,736f6d657468696e67"[..]),
+               Done(&b""[..], Query::Invoke(b"something".to_vec())));
 }
 
 #[test]
