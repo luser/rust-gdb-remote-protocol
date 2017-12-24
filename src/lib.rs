@@ -310,8 +310,7 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                   })
 }
 
-/// Parse the H packet.  Only `Hg` is needed, as the other forms are
-/// obsoleted by `vCont`.
+/// Parse the H packet.
 named!(parse_h_packet<&[u8], ThreadId>,
        preceded!(tag!("Hg"), parse_thread_id));
 
