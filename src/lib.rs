@@ -129,6 +129,8 @@ pub struct ThreadId {
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
 #[derive(Clone, Debug, PartialEq)]
 enum Command<'a> {
+    /// Detach from a process or from all processes.
+    Detach(Option<u64>),
     /// Enable extended mode.
     EnableExtendedMode,
     /// Indicate the reason the target halted.
@@ -248,10 +250,18 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                       |_| Command::UnknownVCommand
                   })
 }
+
 /// Parse the H packet.  Only `Hg` is needed, as the other forms are
 /// obsoleted by `vCont`.
 named!(parse_h_packet<&[u8], ThreadId>,
        preceded!(tag!("Hg"), parse_thread_id));
+
+/// Parse the D packet.
+named!(parse_d_packet<&[u8], Option<u64>>,
+       alt_complete!(preceded!(tag!("D;"), hex_value) => {
+           |pid| Some(pid)
+       }
+       | tag!("D") => { |_| None }));
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
@@ -260,8 +270,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // A arglen,argnum,arg,
     // bc
     // bs
-    // D
-    // D;pid
+    | parse_d_packet => { |pid| Command::Detach(pid) }
     // F RC,EE,CF;XX’
     | tag!("g") => { |_| Command::ReadGeneralRegisters }
     // G XX...
@@ -350,6 +359,10 @@ pub trait Handler {
     fn query_supported_features() {}
 
     fn attached(&self, _pid: Option<u64>) -> Result<ProcessType, Error>;
+
+    fn detach(&self, _pid: Option<u64>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
 
     fn kill(&self, _pid: Option<u64>) -> Result<(), Error> {
         Err(Error::Unimplemented)
@@ -576,7 +589,8 @@ fn handle_packet<H, W>(data: &[u8],
     let mut no_ack_mode = false;
     let response = if let Done(_, command) = command(data) {
         match command {
-            Command::EnableExtendedMode => Response::Empty,
+            // We unconditionally support extended mode.
+            Command::EnableExtendedMode => Response::Ok,
             Command::TargetHaltReason => {
                 handler.halt_reason().into()
             },
@@ -600,6 +614,9 @@ fn handle_packet<H, W>(data: &[u8],
             Command::SetCurrentThread(thread_id) => {
                 handler.set_current_thread(thread_id).into()
             },
+            Command::Detach(pid) => {
+                handler.detach(pid).into()
+            },
 
             Command::Query(Query::Attached(pid)) => {
                 handler.attached(pid).into()
@@ -617,6 +634,9 @@ fn handle_packet<H, W>(data: &[u8],
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
             Command::CtrlC => Response::Empty,
+
+            // Unknown v commands are required to give an empty
+            // response.
             Command::UnknownVCommand => Response::Empty,
         }
     } else { Response::Empty };
@@ -832,6 +852,14 @@ fn test_parse_v_commands() {
                Done(&b""[..], Command::UnknownVCommand));
     assert_eq!(v_command(&b"vFile:close:0"[..]),
                Done(&b""[..], Command::UnknownVCommand));
+}
+
+#[test]
+fn test_parse_d_packets() {
+    assert_eq!(parse_d_packet(&b"D"[..]),
+               Done(&b""[..], None));
+    assert_eq!(parse_d_packet(&b"D;f0"[..]),
+               Done(&b""[..], Some(240)));
 }
 
 #[test]
