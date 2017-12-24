@@ -141,6 +141,8 @@ enum Command<'a> {
     TargetHaltReason,
     // Read general registers.
     ReadGeneralRegisters,
+    // Write general registers.
+    WriteGeneralRegisters(Vec<u8>),
     // Read a single register.
     ReadRegister(u64),
     // Write a single register.
@@ -270,6 +272,9 @@ named!(write_register<&[u8], (u64, Vec<u8>)>,
                                  tag!("="),
                                  hex_byte_sequence)));
 
+named!(write_general_registers<&[u8], Vec<u8>>,
+       preceded!(tag!("G"), hex_byte_sequence));
+
 /// Helper for parse_thread_id that parses a single thread-id element.
 named!(parse_thread_id_element<&[u8], Id>,
        alt_complete!(tag!("0") => { |_| Id::Any }
@@ -323,6 +328,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | tag!("?") => { |_| Command::TargetHaltReason }
          | parse_d_packet => { |pid| Command::Detach(pid) }
          | tag!("g") => { |_| Command::ReadGeneralRegisters }
+         | write_general_registers => { |bytes| Command::WriteGeneralRegisters(bytes) }
          | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
          | tag!("k") => { |_| Command::Kill(None) }
          | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
@@ -419,6 +425,14 @@ pub trait Handler {
     }
 
     fn write_register(&self, _register: u64, _contents: &[u8]) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn read_general_registers(&self) -> Result<Vec<u8>, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn write_general_registers(&self, _contents: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
@@ -668,7 +682,12 @@ fn handle_packet<H, W>(data: &[u8],
             Command::TargetHaltReason => {
                 handler.halt_reason().into()
             },
-            Command::ReadGeneralRegisters => Response::Empty,
+            Command::ReadGeneralRegisters => {
+                handler.read_general_registers().into()
+            },
+            Command::WriteGeneralRegisters(bytes) => {
+                handler.write_general_registers(&bytes[..]).into()
+            },
             Command::Kill(None) => {
                 // The k packet requires no response, so purposely
                 // ignore the result.
@@ -975,6 +994,12 @@ fn test_parse_qrcmd() {
 fn test_parse_write_register() {
     assert_eq!(write_register(&b"Pff=1020"[..]),
                Done(&b""[..], (255, vec!(16, 32))));
+}
+
+#[test]
+fn test_parse_write_general_registers() {
+    assert_eq!(write_general_registers(&b"G0001020304"[..]),
+               Done(&b""[..], vec!(0, 1, 2, 3, 4)));
 }
 
 #[test]
