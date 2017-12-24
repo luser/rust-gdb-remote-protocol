@@ -1,4 +1,3 @@
-// Many things are still necessary to get a working session with GDB; see Github issues.
 #[macro_use]
 extern crate nom;
 extern crate strum;
@@ -100,6 +99,9 @@ enum Query<'a> {
     SupportedFeatures(Vec<GDBFeatureSupported<'a>>),
     /// Disable acknowledgments.
     StartNoAckMode,
+    /// Invoke a command on the server.  The server defines commands
+    /// and how to parse them.
+    Invoke(Vec<u8>),
 }
 
 /// Part of a process id.
@@ -139,8 +141,12 @@ enum Command<'a> {
     TargetHaltReason,
     // Read general registers.
     ReadGeneralRegisters,
+    // Write general registers.
+    WriteGeneralRegisters(Vec<u8>),
     // Read a single register.
     ReadRegister(u64),
+    // Write a single register.
+    WriteRegister(u64, Vec<u8>),
     // Kill request.  The argument is the optional PID, provided when the vKill
     // packet was used, and None when the k packet was used.
     Kill(Option<u64>),
@@ -202,6 +208,9 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                                                                  gdbfeaturesupported))) => {
                       |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
                   }
+                  | preceded!(tag!("qRcmd,"), hex_byte_sequence) => {
+                      |bytes| Query::Invoke(bytes)
+                  }
                   | q_search_memory => {
                       |(address, length, bytes)| Query::SearchMemory { address, length, bytes }
                   }
@@ -257,6 +266,15 @@ named!(read_memory<&[u8], (u64, u64)>,
 named!(read_register<&[u8], u64>,
        preceded!(tag!("p"), hex_value));
 
+named!(write_register<&[u8], (u64, Vec<u8>)>,
+       preceded!(tag!("P"),
+                 separated_pair!(hex_value,
+                                 tag!("="),
+                                 hex_byte_sequence)));
+
+named!(write_general_registers<&[u8], Vec<u8>>,
+       preceded!(tag!("G"), hex_byte_sequence));
+
 /// Helper for parse_thread_id that parses a single thread-id element.
 named!(parse_thread_id_element<&[u8], Id>,
        alt_complete!(tag!("0") => { |_| Id::Any }
@@ -292,8 +310,7 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                   })
 }
 
-/// Parse the H packet.  Only `Hg` is needed, as the other forms are
-/// obsoleted by `vCont`.
+/// Parse the H packet.
 named!(parse_h_packet<&[u8], ThreadId>,
        preceded!(tag!("Hg"), parse_thread_id));
 
@@ -306,43 +323,23 @@ named!(parse_d_packet<&[u8], Option<u64>>,
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
-    tag!("!") => { |_|   Command::EnableExtendedMode }
-    | tag!("?") => { |_| Command::TargetHaltReason }
-    // A arglen,argnum,arg,
-    // bc
-    // bs
-    | parse_d_packet => { |pid| Command::Detach(pid) }
-    // F RC,EE,CF;XX’
-    | tag!("g") => { |_| Command::ReadGeneralRegisters }
-    // G XX...
-    | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
-    // i [addr[,nnn]]
-    | tag!("k") => { |_| Command::Kill(None) }
-    | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
-    | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
-    // M addr,length:XX...
-    | read_register => { |regno| Command::ReadRegister(regno) }
-    // P n...=r...
-    | query => { |q| Command::Query(q) }
-    | tag!("r") => { |_| Command::Reset }
-    | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
-    // t addr:PP,MM
-    | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
-    | v_command => { |command| command }
-    // X addr,length:XX...
-    // ‘z type,addr,kind’
-    // ‘Z type,addr,kind’
-    // ‘z0,addr,kind’
-    // ‘Z0,addr,kind[;cond_list...][;cmds:persist,cmd_list...]’
-    // ‘z1,addr,kind’
-    // ‘Z1,addr,kind[;cond_list...]’
-    // ‘z2,addr,kind’
-    // ‘Z2,addr,kind’
-    // ‘z3,addr,kind’
-    // ‘Z3,addr,kind’
-    // ‘z4,addr,kind’
-    // ‘Z4,addr,kind’
-         )
+         tag!("!") => { |_|   Command::EnableExtendedMode }
+         | tag!("?") => { |_| Command::TargetHaltReason }
+         | parse_d_packet => { |pid| Command::Detach(pid) }
+         | tag!("g") => { |_| Command::ReadGeneralRegisters }
+         | write_general_registers => { |bytes| Command::WriteGeneralRegisters(bytes) }
+         | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
+         | tag!("k") => { |_| Command::Kill(None) }
+         | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
+         | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
+         | read_register => { |regno| Command::ReadRegister(regno) }
+         | write_register => { |(regno, bytes)| Command::WriteRegister(regno, bytes) }
+         | query => { |q| Command::Query(q) }
+         | tag!("r") => { |_| Command::Reset }
+         | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
+         | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
+         | v_command => { |command| command }
+    )
 }
 
 pub enum Error {
@@ -397,11 +394,19 @@ pub enum StopReason {
     // NewThread(ThreadId),
 }
 
+/// This trait should be implemented by servers.  Methods in the trait
+/// generally default to returning `Error::Unimplemented`; but some
+/// exceptions are noted below.  Methods that must be implemented in
+/// order for the server to work at all do not have a default
+/// implementation.
 pub trait Handler {
     fn query_supported_features() {}
 
+    /// Indicate whether the process in question already existed, and
+    /// was attached to; or whether it was created by this server.
     fn attached(&self, _pid: Option<u64>) -> Result<ProcessType, Error>;
 
+    /// Detach from the process.
     fn detach(&self, _pid: Option<u64>) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
@@ -410,36 +415,77 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Check whether the indicated thread is alive.  If alive, return
+    /// `()`.  Otherwise, return an error.
     fn ping_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Read memory.  The address and number of bytes to read are
+    /// provided.
     fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
 
-    fn write_memory(&self, _address: u64, _length: u64, _bytes: &[u8]) -> Result<(), Error> {
+    /// Write the provided bytes to memory at the given address.
+    fn write_memory(&self, _address: u64, _bytes: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Read the contents of the indicated register.  The results
+    /// should be in target byte order.  Note that a value-based API
+    /// is not provided here because on some architectures, there are
+    /// registers wider than ordinary integer types.
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Set the contents of the indicated register to the given
+    /// contents.  The contents are in target byte order.  Note that a
+    /// value-based API is not provided here because on some
+    /// architectures, there are registers wider than ordinary integer
+    /// types.
+    fn write_register(&self, _register: u64, _contents: &[u8]) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn read_general_registers(&self) -> Result<Vec<u8>, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    fn write_general_registers(&self, _contents: &[u8]) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Return the identifier of the current thread.
     fn current_thread(&self) -> Result<Option<ThreadId>, Error> {
         Ok(None)
     }
 
+    /// Set the current thread for future operations.
     fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Search memory.  The search begins at the given address, and
+    /// ends after length bytes have been searched.  If the provided
+    /// bytes are not seen, `None` should be returned; otherwise, the
+    /// address at which the bytes were found should be returned.
     fn search_memory(&self, _address: u64, _length: u64, _bytes: &[u8])
                      -> Result<Option<u64>, Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Return the reason that the inferior has halted.
     fn halt_reason(&self) -> Result<StopReason, Error>;
+
+    /// Invoke a command.  The command is just a sequence of bytes
+    /// (typically ASCII characters), to be interpreted by the server
+    /// in any way it likes.  The result is output to send back to the
+    /// client.  This is used to implement gdb's `monitor` command.
+    fn invoke(&self, &[u8]) -> Result<String, Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -451,6 +497,7 @@ enum Response<'a> {
     Ok,
     Error(u8),
     String(&'a str),
+    Output(String),
     Bytes(Vec<u8>),
     CurrentThread(Option<ThreadId>),
     ProcessType(ProcessType),
@@ -477,7 +524,7 @@ impl<'a> From<()> for Response<'a>
     }
 }
 
-    impl<'a> From<Vec<u8>> for Response<'a>
+impl<'a> From<Vec<u8>> for Response<'a>
 {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
@@ -590,6 +637,12 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         Response::String(s) => {
             write!(writer, "{}", s)?;
         }
+        Response::Output(s) => {
+            write!(writer, "O")?;
+            for byte in s.as_bytes() {
+                write!(writer, "{:02x}", byte)?;
+            }
+        }
         Response::Bytes(bytes) => {
             for byte in bytes {
                 write!(writer, "{:02x}", byte)?;
@@ -661,7 +714,12 @@ fn handle_packet<H, W>(data: &[u8],
             Command::TargetHaltReason => {
                 handler.halt_reason().into()
             },
-            Command::ReadGeneralRegisters => Response::Empty,
+            Command::ReadGeneralRegisters => {
+                handler.read_general_registers().into()
+            },
+            Command::WriteGeneralRegisters(bytes) => {
+                handler.write_general_registers(&bytes[..]).into()
+            },
             Command::Kill(None) => {
                 // The k packet requires no response, so purposely
                 // ignore the result.
@@ -675,6 +733,9 @@ fn handle_packet<H, W>(data: &[u8],
             Command::ReadRegister(regno) => {
                 handler.read_register(regno).into()
             },
+            Command::WriteRegister(regno, bytes) => {
+                handler.write_register(regno, &bytes[..]).into()
+            },
             Command::ReadMemory(address, length) => {
                 handler.read_memory(address, length).into()
             },
@@ -685,7 +746,7 @@ fn handle_packet<H, W>(data: &[u8],
                 if length as usize != bytes.len() {
                     Response::Error(1)
                 } else {
-                    handler.write_memory(address, length, &bytes[..]).into()
+                    handler.write_memory(address, &bytes[..]).into()
                 }
             },
             Command::SetCurrentThread(thread_id) => {
@@ -700,6 +761,19 @@ fn handle_packet<H, W>(data: &[u8],
             },
             Command::Query(Query::CurrentThread) => {
                 handler.current_thread().into()
+            },
+            Command::Query(Query::Invoke(cmd)) => {
+                match handler.invoke(&cmd[..]) {
+                    Result::Ok(val) => {
+                        if val.len() == 0 {
+                            Response::Ok
+                        } else {
+                            Response::Output(val)
+                        }
+                    },
+                    Result::Err(Error::Error(val)) => Response::Error(val),
+                    Result::Err(Error::Unimplemented) => Response::Empty,
+                }
             },
             Command::Query(Query::SearchMemory { address, length, bytes }) => {
                 handler.search_memory(address, length, &bytes[..]).into()
@@ -946,6 +1020,24 @@ fn test_parse_d_packets() {
 fn test_parse_write_memory() {
     assert_eq!(write_memory(&b"Mf0,3:ff0102"[..]),
                Done(&b""[..], (240, 3, vec!(255, 1, 2))));
+}
+
+#[test]
+fn test_parse_qrcmd() {
+    assert_eq!(query(&b"qRcmd,736f6d657468696e67"[..]),
+               Done(&b""[..], Query::Invoke(b"something".to_vec())));
+}
+
+#[test]
+fn test_parse_write_register() {
+    assert_eq!(write_register(&b"Pff=1020"[..]),
+               Done(&b""[..], (255, vec!(16, 32))));
+}
+
+#[test]
+fn test_parse_write_general_registers() {
+    assert_eq!(write_general_registers(&b"G0001020304"[..]),
+               Done(&b""[..], vec!(0, 1, 2, 3, 4)));
 }
 
 #[test]
