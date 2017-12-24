@@ -106,6 +106,10 @@ enum Query<'a> {
     AddressRandomization(bool),
     /// Enable or disable catching of syscalls.
     CatchSyscalls(Option<Vec<u64>>),
+    /// Set the list of pass signals.
+    PassSignals(Vec<u64>),
+    /// Set the list of program signals.
+    ProgramSignals(Vec<u64>),
 }
 
 /// Part of a process id.
@@ -229,6 +233,14 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                   | preceded!(tag!("QCatchSyscalls:1"),
                               many0!(preceded!(tag!(";"), hex_value))) => {
                       |syscalls| Query::CatchSyscalls(Some(syscalls))
+                  }
+                  | preceded!(tag!("QPassSignals:"),
+                              separated_nonempty_list_complete!(tag!(";"), hex_value)) => {
+                      |signals| Query::PassSignals(signals)
+                  }
+                  | preceded!(tag!("QProgramSignals:"),
+                              separated_nonempty_list_complete!(tag!(";"), hex_value)) => {
+                      |signals| Query::ProgramSignals(signals)
                   }
                   )
 }
@@ -512,6 +524,20 @@ pub trait Handler {
     fn catch_syscalls(&self, _syscalls: Option<Vec<u64>>) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Set the list of "pass signals".  A signal marked as a pass
+    /// signal can be delivered to the inferior.  No stopping or
+    /// notification of the client is required.
+    fn set_pass_signals(&self, _signals: Vec<u64>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Set the list of "program signals".  A signal marked as a
+    /// program signal can be delivered to the inferior; other signals
+    /// should be silently discarded.
+    fn set_program_signals(&self, _signals: Vec<u64>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -724,7 +750,8 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+;QCatchSyscalls+")
+    Response::String(concat!("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+",
+                             ";QCatchSyscalls+;QPassSignals+;QProgramSignals+"))
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
@@ -818,6 +845,12 @@ fn handle_packet<H, W>(data: &[u8],
             }
             Command::Query(Query::CatchSyscalls(calls)) => {
                 handler.catch_syscalls(calls).into()
+            }
+            Command::Query(Query::PassSignals(signals)) => {
+                handler.set_pass_signals(signals).into()
+            }
+            Command::Query(Query::ProgramSignals(signals)) => {
+                handler.set_program_signals(signals).into()
             }
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
@@ -1079,6 +1112,18 @@ fn test_parse_syscalls() {
                Done(&b""[..], Query::CatchSyscalls(Some(vec!()))));
     assert_eq!(query(&b"QCatchSyscalls:1;0;1;ff"[..]),
                Done(&b""[..], Query::CatchSyscalls(Some(vec!(0, 1, 255)))));
+}
+
+#[test]
+fn test_parse_signals() {
+    assert_eq!(query(&b"QPassSignals:0"[..]),
+               Done(&b""[..], Query::PassSignals(vec!(0))));
+    assert_eq!(query(&b"QPassSignals:1;2;ff"[..]),
+               Done(&b""[..], Query::PassSignals(vec!(1, 2, 255))));
+    assert_eq!(query(&b"QProgramSignals:0"[..]),
+               Done(&b""[..], Query::ProgramSignals(vec!(0))));
+    assert_eq!(query(&b"QProgramSignals:1;2;ff"[..]),
+               Done(&b""[..], Query::ProgramSignals(vec!(1, 2, 255))));
 }
 
 #[test]
