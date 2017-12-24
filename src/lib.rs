@@ -102,6 +102,8 @@ enum Query<'a> {
     /// Invoke a command on the server.  The server defines commands
     /// and how to parse them.
     Invoke(Vec<u8>),
+    /// Enable or disable address space randomization.
+    AddressRandomization(bool),
 }
 
 /// Part of a process id.
@@ -219,6 +221,8 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                       |value| Query::Attached(Some(value))
                   }
                   | tag!("qAttached") => { |_| Query::Attached(None) }
+                  | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
+                  | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
                   )
 }
 
@@ -486,6 +490,12 @@ pub trait Handler {
     fn invoke(&self, &[u8]) -> Result<String, Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Enable or disable address space randomization.  This setting
+    /// should be used when launching a new process.
+    fn set_address_randomization(&self, _enable: bool) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -698,7 +708,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+")
+    Response::String("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+")
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
@@ -786,6 +796,9 @@ fn handle_packet<H, W>(data: &[u8],
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
                 Response::Ok
+            }
+            Command::Query(Query::AddressRandomization(randomize)) => {
+                handler.set_address_randomization(randomize).into()
             }
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
@@ -1029,6 +1042,14 @@ fn test_parse_write_memory() {
 fn test_parse_qrcmd() {
     assert_eq!(query(&b"qRcmd,736f6d657468696e67"[..]),
                Done(&b""[..], Query::Invoke(b"something".to_vec())));
+}
+
+#[test]
+fn test_parse_randomization() {
+    assert_eq!(query(&b"QDisableRandomization:0"[..]),
+               Done(&b""[..], Query::AddressRandomization(true)));
+    assert_eq!(query(&b"QDisableRandomization:1"[..]),
+               Done(&b""[..], Query::AddressRandomization(false)));
 }
 
 #[test]
