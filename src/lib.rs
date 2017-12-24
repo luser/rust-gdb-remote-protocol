@@ -1,4 +1,3 @@
-// Many things are still necessary to get a working session with GDB; see Github issues.
 #[macro_use]
 extern crate nom;
 extern crate strum;
@@ -312,43 +311,21 @@ named!(parse_d_packet<&[u8], Option<u64>>,
 
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
-    tag!("!") => { |_|   Command::EnableExtendedMode }
-    | tag!("?") => { |_| Command::TargetHaltReason }
-    // A arglen,argnum,arg,
-    // bc
-    // bs
-    | parse_d_packet => { |pid| Command::Detach(pid) }
-    // F RC,EE,CF;XX’
-    | tag!("g") => { |_| Command::ReadGeneralRegisters }
-    // G XX...
-    | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
-    // i [addr[,nnn]]
-    | tag!("k") => { |_| Command::Kill(None) }
-    | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
-    | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
-    // M addr,length:XX...
-    | read_register => { |regno| Command::ReadRegister(regno) }
-    // P n...=r...
-    | query => { |q| Command::Query(q) }
-    | tag!("r") => { |_| Command::Reset }
-    | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
-    // t addr:PP,MM
-    | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
-    | v_command => { |command| command }
-    // X addr,length:XX...
-    // ‘z type,addr,kind’
-    // ‘Z type,addr,kind’
-    // ‘z0,addr,kind’
-    // ‘Z0,addr,kind[;cond_list...][;cmds:persist,cmd_list...]’
-    // ‘z1,addr,kind’
-    // ‘Z1,addr,kind[;cond_list...]’
-    // ‘z2,addr,kind’
-    // ‘Z2,addr,kind’
-    // ‘z3,addr,kind’
-    // ‘Z3,addr,kind’
-    // ‘z4,addr,kind’
-    // ‘Z4,addr,kind’
-         )
+         tag!("!") => { |_|   Command::EnableExtendedMode }
+         | tag!("?") => { |_| Command::TargetHaltReason }
+         | parse_d_packet => { |pid| Command::Detach(pid) }
+         | tag!("g") => { |_| Command::ReadGeneralRegisters }
+         | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
+         | tag!("k") => { |_| Command::Kill(None) }
+         | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
+         | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
+         | read_register => { |regno| Command::ReadRegister(regno) }
+         | query => { |q| Command::Query(q) }
+         | tag!("r") => { |_| Command::Reset }
+         | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
+         | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
+         | v_command => { |command| command }
+    )
 }
 
 pub enum Error {
