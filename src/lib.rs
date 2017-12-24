@@ -110,6 +110,8 @@ enum Query<'a> {
     PassSignals(Vec<u64>),
     /// Set the list of program signals.
     ProgramSignals(Vec<u64>),
+    /// Get a string description of a thread.
+    ThreadInfo(ThreadId),
 }
 
 /// Part of a process id.
@@ -241,6 +243,9 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                   | preceded!(tag!("QProgramSignals:"),
                               separated_nonempty_list_complete!(tag!(";"), hex_value)) => {
                       |signals| Query::ProgramSignals(signals)
+                  }
+                  | preceded!(tag!("qThreadExtraInfo,"), parse_thread_id) => {
+                      |thread_id| Query::ThreadInfo(thread_id)
                   }
                   )
 }
@@ -538,6 +543,13 @@ pub trait Handler {
     fn set_program_signals(&self, _signals: Vec<u64>) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Return information about a given thread.  The returned
+    /// information is just a string description that can be presented
+    /// to the user.
+    fn thread_info(&self, _thread: ThreadId) -> Result<String, Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -549,6 +561,7 @@ enum Response<'a> {
     Ok,
     Error(u8),
     String(&'a str),
+    StringAsString(String),
     Output(String),
     Bytes(Vec<u8>),
     CurrentThread(Option<ThreadId>),
@@ -610,6 +623,13 @@ impl<'a> From<StopReason> for Response<'a>
 {
     fn from(reason: StopReason) -> Self {
         Response::Stopped(reason)
+    }
+}
+
+impl<'a> From<String> for Response<'a>
+{
+    fn from(reason: String) -> Self {
+        Response::StringAsString(reason)
     }
 }
 
@@ -687,6 +707,9 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
             write!(writer, "E{:02x}", val)?;
         }
         Response::String(s) => {
+            write!(writer, "{}", s)?;
+        }
+        Response::StringAsString(s) => {
             write!(writer, "{}", s)?;
         }
         Response::Output(s) => {
@@ -851,6 +874,9 @@ fn handle_packet<H, W>(data: &[u8],
             }
             Command::Query(Query::ProgramSignals(signals)) => {
                 handler.set_program_signals(signals).into()
+            }
+            Command::Query(Query::ThreadInfo(thread_info)) => {
+                handler.thread_info(thread_info).into()
             }
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
@@ -1124,6 +1150,12 @@ fn test_parse_signals() {
                Done(&b""[..], Query::ProgramSignals(vec!(0))));
     assert_eq!(query(&b"QProgramSignals:1;2;ff"[..]),
                Done(&b""[..], Query::ProgramSignals(vec!(1, 2, 255))));
+}
+
+#[test]
+fn test_thread_info() {
+    assert_eq!(query(&b"qThreadExtraInfo,ffff"[..]),
+               Done(&b""[..], Query::ThreadInfo(ThreadId { pid: Id::Id(65535), tid: Id::Any })));
 }
 
 #[test]
