@@ -395,11 +395,19 @@ pub enum StopReason {
     // NewThread(ThreadId),
 }
 
+/// This trait should be implemented by servers.  Methods in the trait
+/// generally default to returning `Error::Unimplemented`; but some
+/// exceptions are noted below.  Methods that must be implemented in
+/// order for the server to work at all do not have a default
+/// implementation.
 pub trait Handler {
     fn query_supported_features() {}
 
+    /// Indicate whether the process in question already existed, and
+    /// was attached to; or whether it was created by this server.
     fn attached(&self, _pid: Option<u64>) -> Result<ProcessType, Error>;
 
+    /// Detach from the process.
     fn detach(&self, _pid: Option<u64>) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
@@ -408,22 +416,36 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Check whether the indicated thread is alive.  If alive, return
+    /// `()`.  Otherwise, return an error.
     fn ping_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Read memory.  The address and number of bytes to read are
+    /// provided.
     fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
 
-    fn write_memory(&self, _address: u64, _length: u64, _bytes: &[u8]) -> Result<(), Error> {
+    /// Write the provided bytes to memory at the given address.
+    fn write_memory(&self, _address: u64, _bytes: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Read the contents of the indicated register.  The results
+    /// should be in target byte order.  Note that a value-based API
+    /// is not provided here because on some architectures, there are
+    /// registers wider than ordinary integer types.
     fn read_register(&self, _register: u64) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Set the contents of the indicated register to the given
+    /// contents.  The contents are in target byte order.  Note that a
+    /// value-based API is not provided here because on some
+    /// architectures, there are registers wider than ordinary integer
+    /// types.
     fn write_register(&self, _register: u64, _contents: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
@@ -436,21 +458,32 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Return the identifier of the current thread.
     fn current_thread(&self) -> Result<Option<ThreadId>, Error> {
         Ok(None)
     }
 
+    /// Set the current thread for future operations.
     fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Search memory.  The search begins at the given address, and
+    /// ends after length bytes have been searched.  If the provided
+    /// bytes are not seen, `None` should be returned; otherwise, the
+    /// address at which the bytes were found should be returned.
     fn search_memory(&self, _address: u64, _length: u64, _bytes: &[u8])
                      -> Result<Option<u64>, Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Return the reason that the inferior has halted.
     fn halt_reason(&self) -> Result<StopReason, Error>;
 
+    /// Invoke a command.  The command is just a sequence of bytes
+    /// (typically ASCII characters), to be interpreted by the server
+    /// in any way it likes.  The result is output to send back to the
+    /// client.  This is used to implement gdb's `monitor` command.
     fn invoke(&self, &[u8]) -> Result<String, Error> {
         Err(Error::Unimplemented)
     }
@@ -714,7 +747,7 @@ fn handle_packet<H, W>(data: &[u8],
                 if length as usize != bytes.len() {
                     Response::Error(1)
                 } else {
-                    handler.write_memory(address, length, &bytes[..]).into()
+                    handler.write_memory(address, &bytes[..]).into()
                 }
             },
             Command::SetCurrentThread(thread_id) => {
@@ -732,7 +765,13 @@ fn handle_packet<H, W>(data: &[u8],
             },
             Command::Query(Query::Invoke(cmd)) => {
                 match handler.invoke(&cmd[..]) {
-                    Result::Ok(val) => Response::Output(val),
+                    Result::Ok(val) => {
+                        if val.len() == 0 {
+                            Response::Ok
+                        } else {
+                            Response::Output(val)
+                        }
+                    },
                     Result::Err(Error::Error(val)) => Response::Error(val),
                     Result::Err(Error::Unimplemented) => Response::Empty,
                 }
