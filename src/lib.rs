@@ -521,8 +521,8 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
-    /// Start or stop catch syscalls.  If the argument is `None`, then
-    /// stop catchin syscalls.  Otherwise, start catching syscalls.
+    /// Start or stop catching syscalls.  If the argument is `None`, then
+    /// stop catching syscalls.  Otherwise, start catching syscalls.
     /// If any syscalls are specified, then only those need be caught;
     /// however, it is ok to report syscall stops that aren't in the
     /// list if that is convenient.
