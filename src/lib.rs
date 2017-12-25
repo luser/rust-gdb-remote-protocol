@@ -285,6 +285,24 @@ named!(write_memory<&[u8], (u64, u64, Vec<u8>)>,
            data: hex_byte_sequence >>
            (address, length, data))));
 
+named!(binary_byte<&[u8], u8>,
+       alt_complete!(
+           preceded!(tag!("}"), take!(1)) => { |b: &[u8]| b[0] ^ 0x20 } |
+           take!(1) => { |b: &[u8]| b[0] }));
+
+named!(binary_byte_sequence<&[u8], Vec<u8>>,
+       many1!(binary_byte));
+
+named!(write_memory_binary<&[u8], (u64, u64, Vec<u8>)>,
+       complete!(do_parse!(
+           tag!("X") >>
+           address: hex_value >>
+           tag!(",") >>
+           length: hex_value >>
+           tag!(":") >>
+           data: binary_byte_sequence >>
+           (address, length, data))));
+
 named!(read_memory<&[u8], (u64, u64)>,
        preceded!(tag!("m"),
                  separated_pair!(hex_value,
@@ -367,6 +385,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
          | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
          | v_command => { |command| command }
+         | write_memory_binary => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
     )
 }
 
@@ -1114,6 +1133,20 @@ fn test_parse_d_packets() {
 fn test_parse_write_memory() {
     assert_eq!(write_memory(&b"Mf0,3:ff0102"[..]),
                Done(&b""[..], (240, 3, vec!(255, 1, 2))));
+}
+
+#[test]
+fn test_parse_write_memory_binary() {
+    assert_eq!(write_memory_binary(&b"Xf0,1: "[..]),
+               Done(&b""[..], (240, 1, vec!(0x20))));
+    assert_eq!(write_memory_binary(&b"X90,10:}\x5d"[..]),
+               Done(&b""[..], (144, 16, vec!(0x7d))));
+    assert_eq!(write_memory_binary(&b"X5,100:}\x5d}\x03"[..]),
+               Done(&b""[..], (5, 256, vec!(0x7d, 0x23))));
+    assert_eq!(write_memory_binary(&b"Xff,2:}\x04\x9a"[..]),
+               Done(&b""[..], (255, 2, vec!(0x24, 0x9a))));
+    assert_eq!(write_memory_binary(&b"Xff,2:\xce}\x0a\x9a"[..]),
+               Done(&b""[..], (255, 2, vec!(0xce, 0x2a, 0x9a))));
 }
 
 #[test]
