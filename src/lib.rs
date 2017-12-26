@@ -534,14 +534,14 @@ pub trait Handler {
     /// signal can be delivered to the inferior.  No stopping or
     /// notification of the client is required.
     fn set_pass_signals(&self, _signals: Vec<u64>) -> Result<(), Error> {
-        Err(Error::Unimplemented)
+        Ok(())
     }
 
     /// Set the list of "program signals".  A signal marked as a
     /// program signal can be delivered to the inferior; other signals
     /// should be silently discarded.
     fn set_program_signals(&self, _signals: Vec<u64>) -> Result<(), Error> {
-        Err(Error::Unimplemented)
+        Ok(())
     }
 
     /// Return information about a given thread.  The returned
