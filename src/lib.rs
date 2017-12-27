@@ -600,7 +600,13 @@ pub enum StopReason {
 /// order for the server to work at all do not have a default
 /// implementation.
 pub trait Handler {
-    fn query_supported_features() {}
+    /// Return a vector additional features supported by this handler.
+    /// Note that there currently is no way to override the built-in
+    /// features that area always handled by the protocol
+    /// implementation.
+    fn query_supported_features(&self) -> Vec<String> {
+        vec!()
+    }
 
     /// Indicate whether the process in question already existed, and
     /// was attached to; or whether it was created by this server.
@@ -1018,12 +1024,19 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     writer.finish()
 }
 
-fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
+fn handle_supported_features<'a, H>(handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    let features = concat!("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+",
-                           ";QCatchSyscalls+;QPassSignals+;QProgramSignals+");
-    Response::String(Cow::Borrowed(features))
+    let mut features = vec!("PacketSize=65536".to_string(),
+                            "QStartNoAckMode+".to_string(),
+                            "multiprocess+".to_string(),
+                            "QDisableRandomization+".to_string(),
+                            "QCatchSyscalls+".to_string(),
+                            "QPassSignals+".to_string(),
+                            "QProgramSignals+".to_string());
+    let mut new_features = handler.query_supported_features();
+    features.append(&mut new_features);
+    Response::String(Cow::Owned(features.join(";")) as Cow<str>)
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
