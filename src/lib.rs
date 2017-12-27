@@ -6,6 +6,7 @@ extern crate strum_macros;
 
 use nom::IResult::*;
 use nom::{IResult, Needed};
+use std::borrow::Cow;
 use std::convert::From;
 use std::io::{self,BufRead,BufReader,Read,Write};
 use std::str::{self, FromStr};
@@ -579,8 +580,7 @@ enum Response<'a> {
     Empty,
     Ok,
     Error(u8),
-    String(&'a str),
-    StringAsString(String),
+    String(Cow<'a, str>),
     Output(String),
     Bytes(Vec<u8>),
     CurrentThread(Option<ThreadId>),
@@ -648,7 +648,7 @@ impl<'a> From<StopReason> for Response<'a>
 impl<'a> From<String> for Response<'a>
 {
     fn from(reason: String) -> Self {
-        Response::StringAsString(reason)
+        Response::String(Cow::Owned(reason) as Cow<str>)
     }
 }
 
@@ -728,9 +728,6 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         Response::String(s) => {
             write!(writer, "{}", s)?;
         }
-        Response::StringAsString(s) => {
-            write!(writer, "{}", s)?;
-        }
         Response::Output(s) => {
             write!(writer, "O")?;
             for byte in s.as_bytes() {
@@ -792,8 +789,9 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
 fn handle_supported_features<'a, H>(_handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
     where H: Handler,
 {
-    Response::String(concat!("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+",
-                             ";QCatchSyscalls+;QPassSignals+;QProgramSignals+"))
+    let features = concat!("PacketSize=65536;QStartNoAckMode+;multiprocess+;QDisableRandomization+",
+                           ";QCatchSyscalls+;QPassSignals+;QProgramSignals+");
+    Response::String(Cow::Borrowed(features))
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
