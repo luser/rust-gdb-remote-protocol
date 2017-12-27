@@ -1,3 +1,20 @@
+//! An implementation of the server side of the GDB Remote Serial
+//! Protocol -- the protocol used by GDB and LLDB to talk to remote
+//! targets.
+//!
+//! This library attempts to hide many of the protocol warts from
+//! servers.  It is also mildly opinionated, in that it implements
+//! certain features itself and requires users of the library to
+//! conform.  For example, it unconditionally implements the
+//! multiprocess and non-stop modes.
+//!
+//! ## Protocol Documentation
+//!
+//! * [Documentation of the protocol](https://sourceware.org/gdb/onlinedocs/gdb/Remote-Protocol.html)
+//! * [LLDB extensions](https://github.com/llvm-mirror/lldb/blob/master/docs/lldb-gdb-remote.txt)
+
+#![deny(missing_docs)]
+
 #[macro_use]
 extern crate nom;
 extern crate strum;
@@ -542,10 +559,16 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     )
 }
 
+/// An error as returned by a `Handler` method.
 pub enum Error {
-    // The meaning of the value is not defined by the protocol; so it
-    // can be used by a handler for debugging.
+    /// A plain error.  The meaning of the value is not defined by the
+    /// protocol; so it can be used by a handler for debugging.
     Error(u8),
+    /// The request is not implemented.  Note that, in some cases, the
+    /// protocol implementation claims that a feature is implemented;
+    /// if the protocol then returns `Unimplemented`, the client will
+    /// be confused.  So, normally it is best either to not implement
+    /// a `Handler` method, or to return `Error` from implementations.
     Unimplemented,
 }
 
@@ -617,6 +640,10 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Kill the indicated process.  If no process is given, then the
+    /// precise effect is unspecified; but killing any or all
+    /// processes, or even rebooting an entire bare-metal target,
+    /// would be appropriate.
     fn kill(&self, _pid: Option<u64>) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
@@ -655,10 +682,18 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Return the general registers.  The registers are returned as a
+    /// vector of bytes, with the registers appearing back-to-back in
+    /// a target-specific order, with the bytes laid out in the target
+    /// byte order.
     fn read_general_registers(&self) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
 
+    /// Write the general registers.  The registers are specified as a
+    /// vector of bytes, with the registers appearing back-to-back in
+    /// a target-specific order, with the bytes laid out in the target
+    /// byte order.
     fn write_general_registers(&self, _contents: &[u8]) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
