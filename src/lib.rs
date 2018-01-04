@@ -140,6 +140,23 @@ pub struct ThreadId {
     pub tid: Id,
 }
 
+/// A descriptor for a watchpoint.  The particular semantics of the watchpoint
+/// (watching memory for read or write access) are addressed elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Watchpoint {
+    /// The address.
+    pub addr: u64,
+
+    /// The number of bytes covered.
+    pub n_bytes: u64,
+}
+
+impl Watchpoint {
+    fn new(addr: u64, n_bytes: u64) -> Watchpoint {
+        Watchpoint{addr, n_bytes}
+    }
+}
+
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
 #[derive(Clone, Debug, PartialEq)]
@@ -175,9 +192,12 @@ enum Command<'a> {
     /// Insert a software breakpoint.
     InsertSoftwareBreakpoint(u64, u64, Option<Vec<Vec<u8>>>, Option<Vec<Vec<u8>>>),
     InsertHardwareBreakpoint(u64, u64, Option<Vec<Vec<u8>>>, Option<Vec<Vec<u8>>>),
-    InsertWriteWatchpoint(u64, u64),
-    InsertReadWatchpoint(u64, u64),
-    InsertAccessWatchpoint(u64, u64),
+    /// Insert a write watchpoint.
+    InsertWriteWatchpoint(Watchpoint),
+    /// Insert a read watchpoint.
+    InsertReadWatchpoint(Watchpoint),
+    /// Insert an access watchpoint.
+    InsertAccessWatchpoint(Watchpoint),
     /// Remove a software breakpoint at `addr`.  The second argument, `kind`,
     /// denotes the kind of breakpoint to use, and is only relevant on some
     /// architectures.
@@ -186,15 +206,12 @@ enum Command<'a> {
     /// denotes the kind of breakpoint to use, and is only relevant on some
     /// architectures.
     RemoveHardwareBreakpoint(u64, u64),
-    /// Remove a watch watchpoint at `addr`.  The second argument denotes
-    /// how many bytes were being watched.
-    RemoveWriteWatchpoint(u64, u64),
-    /// Remove a read watchpoint at `addr`.  The second argument denotes
-    /// how many bytes were being watched.
-    RemoveReadWatchpoint(u64, u64),
-    /// Remove a access watchpoint at `addr`.  The second argument denotes
-    /// how many bytes were being watched.
-    RemoveAccessWatchpoint(u64, u64),
+    /// Remove a write watchpoint.
+    RemoveWriteWatchpoint(Watchpoint),
+    /// Remove a read watchpoint.
+    RemoveReadWatchpoint(Watchpoint),
+    /// Remove an access watchpoint.
+    RemoveAccessWatchpoint(Watchpoint),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -502,20 +519,20 @@ fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                 })(addr, kind, cond_list, cmd_list);
                 Done(rest, c)
             },
-            ZType::WriteWatchpoint => Done(rest, Command::InsertWriteWatchpoint(addr, kind)),
-            ZType::ReadWatchpoint => Done(rest, Command::InsertReadWatchpoint(addr, kind)),
-            ZType::AccessWatchpoint => Done(rest, Command::InsertAccessWatchpoint(addr, kind)),
+            ZType::WriteWatchpoint => Done(rest, Command::InsertWriteWatchpoint(Watchpoint::new(addr, kind))),
+            ZType::ReadWatchpoint => Done(rest, Command::InsertReadWatchpoint(Watchpoint::new(addr, kind))),
+            ZType::AccessWatchpoint => Done(rest, Command::InsertAccessWatchpoint(Watchpoint::new(addr, kind))),
         }
     }
 
     fn remove_command<'a>(type_: ZType, addr: u64, kind: u64) -> Command<'a> {
-        (match type_ {
-            ZType::SoftwareBreakpoint => Command::RemoveSoftwareBreakpoint,
-            ZType::HardwareBreakpoint => Command::RemoveHardwareBreakpoint,
-            ZType::WriteWatchpoint => Command::RemoveWriteWatchpoint,
-            ZType::ReadWatchpoint => Command::RemoveReadWatchpoint,
-            ZType::AccessWatchpoint => Command::RemoveAccessWatchpoint,
-        })(addr, kind)
+        match type_ {
+            ZType::SoftwareBreakpoint => Command::RemoveSoftwareBreakpoint(addr, kind),
+            ZType::HardwareBreakpoint => Command::RemoveHardwareBreakpoint(addr, kind),
+            ZType::WriteWatchpoint => Command::RemoveWriteWatchpoint(Watchpoint::new(addr, kind)),
+            ZType::ReadWatchpoint => Command::RemoveReadWatchpoint(Watchpoint::new(addr, kind)),
+            ZType::AccessWatchpoint => Command::RemoveAccessWatchpoint(Watchpoint::new(addr, kind)),
+        }
     }
 }
 
@@ -751,21 +768,18 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
-    /// Insert a write watchpoint for the specified number of bytes at the
-    /// given address.
-    fn insert_write_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+    /// Insert a write watchpoint.
+    fn insert_write_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
-    /// Insert a read watchpoint for the specified number of bytes at the
-    /// given address.
-    fn insert_read_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+    /// Insert a read watchpoint.
+    fn insert_read_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
-    /// Insert an access watchpoint for the specified number of bytes at the
-    /// given address.
-    fn insert_access_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+    /// Insert an access watchpoint.
+    fn insert_access_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
@@ -785,21 +799,18 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
-    /// Remove a write watchpoint for the specified number of bytes at the
-    /// given address.
-    fn remove_write_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+    /// Remove a write watchpoint.
+    fn remove_write_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
-    /// Remove a read watchpoint for the specified number of bytes at the
-    /// given address.
-    fn remove_read_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+    /// Remove a read watchpoint.
+    fn remove_read_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
-    /// Remove an access watchpoint for the specified number of bytes at the
-    /// given address.
-    fn remove_access_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+    /// Remove an access watchpoint.
+    fn remove_access_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 }
@@ -1142,14 +1153,14 @@ fn handle_packet<H, W>(data: &[u8],
             Command::InsertHardwareBreakpoint(addr, kind, cond_list, cmd_list) => {
                 handler.insert_hardware_breakpoint(addr, kind, cond_list, cmd_list).into()
             }
-            Command::InsertWriteWatchpoint(addr, n_bytes) => {
-                handler.insert_write_watchpoint(addr, n_bytes).into()
+            Command::InsertWriteWatchpoint(wp) => {
+                handler.insert_write_watchpoint(wp).into()
             }
-            Command::InsertReadWatchpoint(addr, n_bytes) => {
-                handler.insert_read_watchpoint(addr, n_bytes).into()
+            Command::InsertReadWatchpoint(wp) => {
+                handler.insert_read_watchpoint(wp).into()
             }
-            Command::InsertAccessWatchpoint(addr, n_bytes) => {
-                handler.insert_access_watchpoint(addr, n_bytes).into()
+            Command::InsertAccessWatchpoint(wp) => {
+                handler.insert_access_watchpoint(wp).into()
             }
             Command::RemoveSoftwareBreakpoint(addr, kind) => {
                 handler.remove_software_breakpoint(addr, kind).into()
@@ -1157,14 +1168,14 @@ fn handle_packet<H, W>(data: &[u8],
             Command::RemoveHardwareBreakpoint(addr, kind) => {
                 handler.remove_hardware_breakpoint(addr, kind).into()
             }
-            Command::RemoveWriteWatchpoint(addr, n_bytes) => {
-                handler.remove_write_watchpoint(addr, n_bytes).into()
+            Command::RemoveWriteWatchpoint(wp) => {
+                handler.remove_write_watchpoint(wp).into()
             }
-            Command::RemoveReadWatchpoint(addr, n_bytes) => {
-                handler.remove_read_watchpoint(addr, n_bytes).into()
+            Command::RemoveReadWatchpoint(wp) => {
+                handler.remove_read_watchpoint(wp).into()
             }
-            Command::RemoveAccessWatchpoint(addr, n_bytes) => {
-                handler.remove_access_watchpoint(addr, n_bytes).into()
+            Command::RemoveAccessWatchpoint(wp) => {
+                handler.remove_access_watchpoint(wp).into()
             }
         }
     } else { Response::Empty };
@@ -1494,17 +1505,17 @@ fn test_breakpoints() {
     assert_eq!(parse_z_packet(&b"z1,aec,0"[..]),
                Done(&b""[..], Command::RemoveHardwareBreakpoint(0xaec, 0)));
     assert_eq!(parse_z_packet(&b"Z2,4cc,2"[..]),
-               Done(&b""[..], Command::InsertWriteWatchpoint(0x4cc, 2)));
+               Done(&b""[..], Command::InsertWriteWatchpoint(Watchpoint::new(0x4cc, 2))));
     assert_eq!(parse_z_packet(&b"z2,4ccf,4"[..]),
-               Done(&b""[..], Command::RemoveWriteWatchpoint(0x4ccf, 4)));
+               Done(&b""[..], Command::RemoveWriteWatchpoint(Watchpoint::new(0x4ccf, 4))));
     assert_eq!(parse_z_packet(&b"Z3,7777,4"[..]),
-               Done(&b""[..], Command::InsertReadWatchpoint(0x7777, 4)));
+               Done(&b""[..], Command::InsertReadWatchpoint(Watchpoint::new(0x7777, 4))));
     assert_eq!(parse_z_packet(&b"z3,77778,8"[..]),
-               Done(&b""[..], Command::RemoveReadWatchpoint(0x77778, 8)));
+               Done(&b""[..], Command::RemoveReadWatchpoint(Watchpoint::new(0x77778, 8))));
     assert_eq!(parse_z_packet(&b"Z4,7777,10"[..]),
-               Done(&b""[..], Command::InsertAccessWatchpoint(0x7777, 16)));
+               Done(&b""[..], Command::InsertAccessWatchpoint(Watchpoint::new(0x7777, 16))));
     assert_eq!(parse_z_packet(&b"z4,77778,20"[..]),
-               Done(&b""[..], Command::RemoveAccessWatchpoint(0x77778, 32)));
+               Done(&b""[..], Command::RemoveAccessWatchpoint(Watchpoint::new(0x77778, 32))));
 
     assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0"[..]),
                Done(&b""[..], Command::InsertSoftwareBreakpoint(0x1ff, 2,
