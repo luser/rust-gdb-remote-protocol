@@ -722,6 +722,86 @@ pub trait Handler {
     fn thread_info(&self, _thread: ThreadId) -> Result<String, Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Insert a software breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to insert is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).  The optional condition
+    /// list is target-specific bytecode to determine whether a hit
+    /// breakpoint should be reported to GDB.  The optional command list is
+    /// target-specific bytecode for commands to be executed on the target
+    /// when a breakpoint is hit.
+    fn insert_software_breakpoint(&self, _addr: u64, _kind: u64,
+                                  _condition_list: Option<Vec<Vec<u8>>>,
+                                  _command_list: Option<Vec<Vec<u8>>>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a hardware breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to insert is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).  The optional condition
+    /// list is target-specific bytecode to determine whether a hit
+    /// breakpoint should be reported to GDB.  The optional command list is
+    /// target-specific bytecode for commands to be executed on the target
+    /// when a breakpoint is hit.
+    fn insert_hardware_breakpoint(&self, _addr: u64, _kind: u64,
+                                  _condition_list: Option<Vec<Vec<u8>>>,
+                                  _command_list: Option<Vec<Vec<u8>>>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a write watchpoint for the specified number of bytes at the
+    /// given address.
+    fn insert_write_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a read watchpoint for the specified number of bytes at the
+    /// given address.
+    fn insert_read_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert an access watchpoint for the specified number of bytes at the
+    /// given address.
+    fn insert_access_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a software breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to remove is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).
+    fn remove_software_breakpoint(&self, _addr: u64, _kind: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a hardware breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to remove is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).
+    fn remove_hardware_breakpoint(&self, _addr: u64, _kind: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a write watchpoint for the specified number of bytes at the
+    /// given address.
+    fn remove_write_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a read watchpoint for the specified number of bytes at the
+    /// given address.
+    fn remove_read_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove an access watchpoint for the specified number of bytes at the
+    /// given address.
+    fn remove_access_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -1056,18 +1136,36 @@ fn handle_packet<H, W>(data: &[u8],
             // response.
             Command::UnknownVCommand => Response::Empty,
 
-            // An empty response for these commands indicates they are
-            // unimplemented.
-            Command::InsertSoftwareBreakpoint(_, _, _, _) |
-            Command::InsertHardwareBreakpoint(_, _, _, _) |
-            Command::InsertWriteWatchpoint(_, _) |
-            Command::InsertReadWatchpoint(_, _) |
-            Command::InsertAccessWatchpoint(_, _) |
-            Command::RemoveSoftwareBreakpoint(_, _) |
-            Command::RemoveHardwareBreakpoint(_, _) |
-            Command::RemoveWriteWatchpoint(_, _) |
-            Command::RemoveReadWatchpoint(_, _) |
-            Command::RemoveAccessWatchpoint(_, _) => Response::Empty,
+            Command::InsertSoftwareBreakpoint(addr, kind, cond_list, cmd_list) => {
+                handler.insert_software_breakpoint(addr, kind, cond_list, cmd_list).into()
+            }
+            Command::InsertHardwareBreakpoint(addr, kind, cond_list, cmd_list) => {
+                handler.insert_hardware_breakpoint(addr, kind, cond_list, cmd_list).into()
+            }
+            Command::InsertWriteWatchpoint(addr, n_bytes) => {
+                handler.insert_write_watchpoint(addr, n_bytes).into()
+            }
+            Command::InsertReadWatchpoint(addr, n_bytes) => {
+                handler.insert_read_watchpoint(addr, n_bytes).into()
+            }
+            Command::InsertAccessWatchpoint(addr, n_bytes) => {
+                handler.insert_access_watchpoint(addr, n_bytes).into()
+            }
+            Command::RemoveSoftwareBreakpoint(addr, kind) => {
+                handler.remove_software_breakpoint(addr, kind).into()
+            }
+            Command::RemoveHardwareBreakpoint(addr, kind) => {
+                handler.remove_hardware_breakpoint(addr, kind).into()
+            }
+            Command::RemoveWriteWatchpoint(addr, n_bytes) => {
+                handler.remove_write_watchpoint(addr, n_bytes).into()
+            }
+            Command::RemoveReadWatchpoint(addr, n_bytes) => {
+                handler.remove_read_watchpoint(addr, n_bytes).into()
+            }
+            Command::RemoveAccessWatchpoint(addr, n_bytes) => {
+                handler.remove_access_watchpoint(addr, n_bytes).into()
+            }
         }
     } else { Response::Empty };
     write_response(response, writer)?;
