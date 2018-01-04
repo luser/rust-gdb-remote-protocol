@@ -172,6 +172,29 @@ enum Command<'a> {
     UnknownVCommand,
     /// Set the current thread for future commands, such as `ReadRegister`.
     SetCurrentThread(ThreadId),
+    /// Insert a software breakpoint.
+    InsertSoftwareBreakpoint(u64, u64, Option<Vec<Vec<u8>>>, Option<Vec<Vec<u8>>>),
+    InsertHardwareBreakpoint(u64, u64, Option<Vec<Vec<u8>>>, Option<Vec<Vec<u8>>>),
+    InsertWriteWatchpoint(u64, u64),
+    InsertReadWatchpoint(u64, u64),
+    InsertAccessWatchpoint(u64, u64),
+    /// Remove a software breakpoint at `addr`.  The second argument, `kind`,
+    /// denotes the kind of breakpoint to use, and is only relevant on some
+    /// architectures.
+    RemoveSoftwareBreakpoint(u64, u64),
+    /// Remove a hardware breakpoint at `addr`.  The second argument, `kind`,
+    /// denotes the kind of breakpoint to use, and is only relevant on some
+    /// architectures.
+    RemoveHardwareBreakpoint(u64, u64),
+    /// Remove a watch watchpoint at `addr`.  The second argument denotes
+    /// how many bytes were being watched.
+    RemoveWriteWatchpoint(u64, u64),
+    /// Remove a read watchpoint at `addr`.  The second argument denotes
+    /// how many bytes were being watched.
+    RemoveReadWatchpoint(u64, u64),
+    /// Remove a access watchpoint at `addr`.  The second argument denotes
+    /// how many bytes were being watched.
+    RemoveAccessWatchpoint(u64, u64),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -368,6 +391,134 @@ named!(parse_d_packet<&[u8], Option<u64>>,
        }
        | tag!("D") => { |_| None }));
 
+#[derive(Copy, Clone)]
+enum ZAction {
+    Insert,
+    Remove,
+}
+
+named!(parse_z_action<&[u8], ZAction>,
+       alt_complete!(tag!("z") => { |_| ZAction::Remove } |
+                     tag!("Z") => { |_| ZAction::Insert }));
+
+#[derive(Copy, Clone)]
+enum ZType {
+    SoftwareBreakpoint,
+    HardwareBreakpoint,
+    WriteWatchpoint,
+    ReadWatchpoint,
+    AccessWatchpoint,
+}
+
+named!(parse_z_type<&[u8], ZType>,
+       alt_complete!(tag!("0") => { |_| ZType::SoftwareBreakpoint } |
+                     tag!("1") => { |_| ZType::HardwareBreakpoint } |
+                     tag!("2") => { |_| ZType::WriteWatchpoint } |
+                     tag!("3") => { |_| ZType::ReadWatchpoint } |
+                     tag!("4") => { |_| ZType::AccessWatchpoint }));
+
+named!(parse_cond_or_command_expression<&[u8], Vec<u8>>,
+       do_parse!(tag!("X") >>
+                 len: hex_value >>
+                 tag!(",") >>
+                 expr: take!(len) >>
+                 (expr.to_vec())));
+
+named!(parse_condition_list<&[u8], Vec<Vec<u8>>>,
+       do_parse!(tag!(";") >>
+                 list: many1!(parse_cond_or_command_expression) >>
+                 (list)));
+
+fn maybe_condition_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Vec<u8>>>> {
+    // An Incomplete here really means "not enough input to match a
+    // condition list", and that's OK.  An Error is *probably* that the
+    // input contains a command list rather than a condition list; the
+    // two are identical in their first character.  So just ignore that
+    // FIXME.
+    match parse_condition_list(i) {
+        Done(rest, v) => Done(rest, Some(v)),
+        Incomplete(_i) => Done(i, None),
+        Error(_) => Done(i, None),
+    }
+}
+
+named!(parse_command_list<&[u8], Vec<Vec<u8>>>,
+       // FIXME we drop the persistence flag here. 
+       do_parse!(tag!(";cmds") >>
+                 list: alt_complete!(do_parse!(persist_flag: hex_value >>
+                                               tag!(",") >>
+                                               cmd_list: many1!(parse_cond_or_command_expression) >>
+                                               (cmd_list)) |
+                                     many1!(parse_cond_or_command_expression)) >>
+                 (list)));
+
+fn maybe_command_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Vec<u8>>>> {
+    // An Incomplete here really means "not enough input to match a
+    // command list", and that's OK.
+    match parse_command_list(i) {
+        Done(rest, v) => Done(rest, Some(v)),
+        Incomplete(_i) => Done(i, None),
+        Error(e) => Error(e),
+    }
+}
+
+named!(parse_cond_and_command_list<&[u8], (Option<Vec<Vec<u8>>>,
+                                           Option<Vec<Vec<u8>>>)>,
+       do_parse!(cond_list: maybe_condition_list >>
+                 cmd_list: maybe_command_list >>
+                 (cond_list, cmd_list)));
+
+fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    let (rest, (action, type_, addr, kind)) = try_parse!(i, do_parse!(
+                                                      action: parse_z_action >>
+                                                      type_: parse_z_type >>
+                                                      tag!(",") >>
+                                                      addr: hex_value >>
+                                                      tag!(",") >>
+                                                      kind: hex_value >>
+                                                      (action, type_, addr, kind)));
+
+    return match action {
+        ZAction::Insert => {
+            insert_command(rest, type_, addr, kind)
+        },
+        ZAction::Remove => {
+            Done(rest, remove_command(type_, addr, kind))
+        }
+    };
+
+    fn insert_command<'a>(rest: &'a [u8], type_: ZType, addr: u64, kind: u64) -> IResult<&'a [u8], Command<'a>> {
+        match type_ {
+            // Software and hardware breakpoints both permit optional condition
+            // lists and commands that are evaluated on the target when
+            // breakpoints are hit.
+            ZType::SoftwareBreakpoint | ZType::HardwareBreakpoint => {
+                let (rest, (cond_list, cmd_list)) = parse_cond_and_command_list(rest).unwrap();
+                let c = (match type_ {
+                    ZType::SoftwareBreakpoint => Command::InsertSoftwareBreakpoint,
+                    ZType::HardwareBreakpoint => Command::InsertHardwareBreakpoint,
+                    // Satisfy rustc's checking
+                    _ => panic!("cannot get here"),
+                })(addr, kind, cond_list, cmd_list);
+                Done(rest, c)
+            },
+            ZType::WriteWatchpoint => Done(rest, Command::InsertWriteWatchpoint(addr, kind)),
+            ZType::ReadWatchpoint => Done(rest, Command::InsertReadWatchpoint(addr, kind)),
+            ZType::AccessWatchpoint => Done(rest, Command::InsertAccessWatchpoint(addr, kind)),
+        }
+    }
+
+    fn remove_command<'a>(type_: ZType, addr: u64, kind: u64) -> Command<'a> {
+        (match type_ {
+            ZType::SoftwareBreakpoint => Command::RemoveSoftwareBreakpoint,
+            ZType::HardwareBreakpoint => Command::RemoveHardwareBreakpoint,
+            ZType::WriteWatchpoint => Command::RemoveWriteWatchpoint,
+            ZType::ReadWatchpoint => Command::RemoveReadWatchpoint,
+            ZType::AccessWatchpoint => Command::RemoveAccessWatchpoint,
+        })(addr, kind)
+    }
+}
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
          tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -387,6 +538,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
          | v_command => { |command| command }
          | write_memory_binary => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
+         | parse_z_packet => { |command| command }
     )
 }
 
@@ -568,6 +720,86 @@ pub trait Handler {
     /// information is just a string description that can be presented
     /// to the user.
     fn thread_info(&self, _thread: ThreadId) -> Result<String, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a software breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to insert is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).  The optional condition
+    /// list is target-specific bytecode to determine whether a hit
+    /// breakpoint should be reported to GDB.  The optional command list is
+    /// target-specific bytecode for commands to be executed on the target
+    /// when a breakpoint is hit.
+    fn insert_software_breakpoint(&self, _addr: u64, _kind: u64,
+                                  _condition_list: Option<Vec<Vec<u8>>>,
+                                  _command_list: Option<Vec<Vec<u8>>>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a hardware breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to insert is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).  The optional condition
+    /// list is target-specific bytecode to determine whether a hit
+    /// breakpoint should be reported to GDB.  The optional command list is
+    /// target-specific bytecode for commands to be executed on the target
+    /// when a breakpoint is hit.
+    fn insert_hardware_breakpoint(&self, _addr: u64, _kind: u64,
+                                  _condition_list: Option<Vec<Vec<u8>>>,
+                                  _command_list: Option<Vec<Vec<u8>>>) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a write watchpoint for the specified number of bytes at the
+    /// given address.
+    fn insert_write_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert a read watchpoint for the specified number of bytes at the
+    /// given address.
+    fn insert_read_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Insert an access watchpoint for the specified number of bytes at the
+    /// given address.
+    fn insert_access_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a software breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to remove is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).
+    fn remove_software_breakpoint(&self, _addr: u64, _kind: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a hardware breakpoint at the given address.  The
+    /// interpretation of the kind of breakpoint to remove is
+    /// target-specific, and generally only matters for targets supporting
+    /// multiple execution modes (e.g. ARM/Thumb).
+    fn remove_hardware_breakpoint(&self, _addr: u64, _kind: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a write watchpoint for the specified number of bytes at the
+    /// given address.
+    fn remove_write_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove a read watchpoint for the specified number of bytes at the
+    /// given address.
+    fn remove_read_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Remove an access watchpoint for the specified number of bytes at the
+    /// given address.
+    fn remove_access_watchpoint(&self, _addr: u64, _bytes: u64) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 }
@@ -903,6 +1135,37 @@ fn handle_packet<H, W>(data: &[u8],
             // Unknown v commands are required to give an empty
             // response.
             Command::UnknownVCommand => Response::Empty,
+
+            Command::InsertSoftwareBreakpoint(addr, kind, cond_list, cmd_list) => {
+                handler.insert_software_breakpoint(addr, kind, cond_list, cmd_list).into()
+            }
+            Command::InsertHardwareBreakpoint(addr, kind, cond_list, cmd_list) => {
+                handler.insert_hardware_breakpoint(addr, kind, cond_list, cmd_list).into()
+            }
+            Command::InsertWriteWatchpoint(addr, n_bytes) => {
+                handler.insert_write_watchpoint(addr, n_bytes).into()
+            }
+            Command::InsertReadWatchpoint(addr, n_bytes) => {
+                handler.insert_read_watchpoint(addr, n_bytes).into()
+            }
+            Command::InsertAccessWatchpoint(addr, n_bytes) => {
+                handler.insert_access_watchpoint(addr, n_bytes).into()
+            }
+            Command::RemoveSoftwareBreakpoint(addr, kind) => {
+                handler.remove_software_breakpoint(addr, kind).into()
+            }
+            Command::RemoveHardwareBreakpoint(addr, kind) => {
+                handler.remove_hardware_breakpoint(addr, kind).into()
+            }
+            Command::RemoveWriteWatchpoint(addr, n_bytes) => {
+                handler.remove_write_watchpoint(addr, n_bytes).into()
+            }
+            Command::RemoveReadWatchpoint(addr, n_bytes) => {
+                handler.remove_read_watchpoint(addr, n_bytes).into()
+            }
+            Command::RemoveAccessWatchpoint(addr, n_bytes) => {
+                handler.remove_access_watchpoint(addr, n_bytes).into()
+            }
         }
     } else { Response::Empty };
     write_response(response, writer)?;
@@ -1218,4 +1481,76 @@ fn test_write_response() {
         tid: Id::Id(1)
     }))).unwrap(),
                "$QCpff.1#2f");
+}
+
+#[test]
+fn test_breakpoints() {
+    assert_eq!(parse_z_packet(&b"Z0,1ff,0"[..]),
+               Done(&b""[..], Command::InsertSoftwareBreakpoint(0x1ff, 0, None, None)));
+    assert_eq!(parse_z_packet(&b"z0,1fff,0"[..]),
+               Done(&b""[..], Command::RemoveSoftwareBreakpoint(0x1fff, 0)));
+    assert_eq!(parse_z_packet(&b"Z1,ae,0"[..]),
+               Done(&b""[..], Command::InsertHardwareBreakpoint(0xae, 0, None, None)));
+    assert_eq!(parse_z_packet(&b"z1,aec,0"[..]),
+               Done(&b""[..], Command::RemoveHardwareBreakpoint(0xaec, 0)));
+    assert_eq!(parse_z_packet(&b"Z2,4cc,2"[..]),
+               Done(&b""[..], Command::InsertWriteWatchpoint(0x4cc, 2)));
+    assert_eq!(parse_z_packet(&b"z2,4ccf,4"[..]),
+               Done(&b""[..], Command::RemoveWriteWatchpoint(0x4ccf, 4)));
+    assert_eq!(parse_z_packet(&b"Z3,7777,4"[..]),
+               Done(&b""[..], Command::InsertReadWatchpoint(0x7777, 4)));
+    assert_eq!(parse_z_packet(&b"z3,77778,8"[..]),
+               Done(&b""[..], Command::RemoveReadWatchpoint(0x77778, 8)));
+    assert_eq!(parse_z_packet(&b"Z4,7777,10"[..]),
+               Done(&b""[..], Command::InsertAccessWatchpoint(0x7777, 16)));
+    assert_eq!(parse_z_packet(&b"z4,77778,20"[..]),
+               Done(&b""[..], Command::RemoveAccessWatchpoint(0x77778, 32)));
+
+    assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0"[..]),
+               Done(&b""[..], Command::InsertSoftwareBreakpoint(0x1ff, 2,
+                                                                Some(vec!(vec!('0' as u8))), None)));
+    assert_eq!(parse_z_packet(&b"Z1,1ff,2;X1,0"[..]),
+               Done(&b""[..], Command::InsertHardwareBreakpoint(0x1ff, 2,
+                                                                Some(vec!(vec!('0' as u8))), None)));
+
+    assert_eq!(parse_z_packet(&b"Z0,1ff,2;cmdsX1,z"[..]),
+               Done(&b""[..], Command::InsertSoftwareBreakpoint(0x1ff, 2,
+                                                                None, Some(vec!(vec!('z' as u8))))));
+    assert_eq!(parse_z_packet(&b"Z1,1ff,2;cmdsX1,z"[..]),
+               Done(&b""[..], Command::InsertHardwareBreakpoint(0x1ff, 2,
+                                                                None, Some(vec!(vec!('z' as u8))))));
+
+    assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0;cmdsX1,a"[..]),
+               Done(&b""[..], Command::InsertSoftwareBreakpoint(0x1ff, 2,
+                                                                Some(vec!(vec!('0' as u8))),
+                                                                Some(vec!(vec!('a' as u8))))));
+    assert_eq!(parse_z_packet(&b"Z1,1ff,2;X1,0;cmdsX1,a"[..]),
+               Done(&b""[..], Command::InsertHardwareBreakpoint(0x1ff, 2,
+                                                                Some(vec!(vec!('0' as u8))),
+                                                                Some(vec!(vec!('a' as u8))))));
+}
+
+#[test]
+fn test_cond_or_command_list() {
+    assert_eq!(parse_condition_list(&b";X1,a"[..]),
+               Done(&b""[..], vec!(vec!('a' as u8))));
+    assert_eq!(parse_condition_list(&b";X2,ab"[..]),
+               Done(&b""[..], vec!(vec!('a' as u8, 'b' as u8))));
+    assert_eq!(parse_condition_list(&b";X1,zX1,y"[..]),
+               Done(&b""[..], vec!(vec!('z' as u8),
+                                   vec!('y' as u8))));
+    assert_eq!(parse_condition_list(&b";X1,zX10,yyyyyyyyyyyyyyyy"[..]),
+               Done(&b""[..], vec!(vec!('z' as u8),
+                                   vec!['y' as u8; 16])));
+
+    assert_eq!(parse_command_list(&b";cmdsX1,a"[..]),
+               Done(&b""[..], vec!(vec!('a' as u8))));
+    assert_eq!(parse_command_list(&b";cmdsX2,ab"[..]),
+               Done(&b""[..], vec!(vec!('a' as u8, 'b' as u8))));
+    assert_eq!(parse_command_list(&b";cmdsX1,zX1,y"[..]),
+               Done(&b""[..], vec!(vec!('z' as u8),
+                                   vec!('y' as u8))));
+    assert_eq!(parse_command_list(&b";cmdsX1,zX10,yyyyyyyyyyyyyyyy"[..]),
+               Done(&b""[..], vec!(vec!('z' as u8),
+                                   vec!['y' as u8; 16])));
 }
