@@ -197,6 +197,21 @@ impl Breakpoint {
     }
 }
 
+/// A descriptor for a region of memory.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemoryRegion {
+    /// The base address.
+    pub address: u64,
+    /// The length.
+    pub length: u64,
+}
+
+impl MemoryRegion {
+    fn new(address: u64, length: u64) -> MemoryRegion {
+        MemoryRegion{address, length}
+    }
+}
+
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
 #[derive(Clone, Debug, PartialEq)]
@@ -219,9 +234,9 @@ enum Command<'a> {
     // packet was used, and None when the k packet was used.
     Kill(Option<u64>),
     // Read specified region of memory.
-    ReadMemory(u64, u64),
+    ReadMemory(MemoryRegion),
     // Write specified region of memory.
-    WriteMemory(u64, u64, Vec<u8>),
+    WriteMemory(MemoryRegion, Vec<u8>),
     Query(Query<'a>),
     Reset,
     PingThread(ThreadId),
@@ -582,8 +597,8 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | write_general_registers => { |bytes| Command::WriteGeneralRegisters(bytes) }
          | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
          | tag!("k") => { |_| Command::Kill(None) }
-         | read_memory => { |(addr, length)| Command::ReadMemory(addr, length) }
-         | write_memory => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
+         | read_memory => { |(addr, length)| Command::ReadMemory(MemoryRegion::new(addr, length)) }
+         | write_memory => { |(addr, length, bytes)| Command::WriteMemory(MemoryRegion::new(addr, length), bytes) }
          | read_register => { |regno| Command::ReadRegister(regno) }
          | write_register => { |(regno, bytes)| Command::WriteRegister(regno, bytes) }
          | query => { |q| Command::Query(q) }
@@ -591,7 +606,7 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
          | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
          | v_command => { |command| command }
-         | write_memory_binary => { |(addr, length, bytes)| Command::WriteMemory(addr, length, bytes) }
+         | write_memory_binary => { |(addr, length, bytes)| Command::WriteMemory(MemoryRegion::new(addr, length), bytes) }
          | parse_z_packet => { |command| command }
     )
 }
@@ -675,9 +690,8 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
-    /// Read memory.  The address and number of bytes to read are
-    /// provided.
-    fn read_memory(&self, _address: u64, _length: u64) -> Result<Vec<u8>, Error> {
+    /// Read a memory region.
+    fn read_memory(&self, _region: MemoryRegion) -> Result<Vec<u8>, Error> {
         Err(Error::Unimplemented)
     }
 
@@ -1088,17 +1102,17 @@ fn handle_packet<H, W>(data: &[u8],
             Command::WriteRegister(regno, bytes) => {
                 handler.write_register(regno, &bytes[..]).into()
             },
-            Command::ReadMemory(address, length) => {
-                handler.read_memory(address, length).into()
+            Command::ReadMemory(region) => {
+                handler.read_memory(region).into()
             },
-            Command::WriteMemory(address, length, bytes) => {
+            Command::WriteMemory(region, bytes) => {
                 // The docs don't really say what to do if the given
                 // length disagrees with the number of bytes sent, so
                 // just error if they disagree.
-                if length as usize != bytes.len() {
+                if region.length as usize != bytes.len() {
                     Response::Error(1)
                 } else {
-                    handler.write_memory(address, &bytes[..]).into()
+                    handler.write_memory(region.address, &bytes[..]).into()
                 }
             },
             Command::SetCurrentThread(thread_id) => {
