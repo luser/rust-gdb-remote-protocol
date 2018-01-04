@@ -174,6 +174,13 @@ impl Watchpoint {
     }
 }
 
+/// Target-specific bytecode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bytecode {
+    /// The bytecodes.
+    pub bytecode: Vec<u8>
+}
+
 /// A descriptor for a breakpoint.  The particular implementation technique
 /// of the breakpoint, hardware or software, is handled elsewhere.
 #[derive(Clone, Debug, PartialEq)]
@@ -192,17 +199,17 @@ pub struct Breakpoint {
     /// conditions.  Each condition should be evaluated by the target when
     /// the breakpoint is hit to determine whether the hit should be reported
     /// back to the debugger.
-    pub conditions: Option<Vec<Vec<u8>>>,
+    pub conditions: Option<Vec<Bytecode>>,
 
     /// An optional list of target-specific bytecodes representing commands.
     /// These commands should be evaluated when a breakpoint is hit; any
     /// results are not reported back to the debugger.
-    pub commands: Option<Vec<Vec<u8>>>,
+    pub commands: Option<Vec<Bytecode>>,
 }
 
 impl Breakpoint {
-    fn new(addr: u64, kind: u64, conditions: Option<Vec<Vec<u8>>>,
-           commands: Option<Vec<Vec<u8>>>) -> Breakpoint {
+    fn new(addr: u64, kind: u64, conditions: Option<Vec<Bytecode>>,
+           commands: Option<Vec<Bytecode>>) -> Breakpoint {
         Breakpoint{addr, kind, conditions, commands}
     }
 }
@@ -481,19 +488,19 @@ named!(parse_z_type<&[u8], ZType>,
                      tag!("3") => { |_| ZType::ReadWatchpoint } |
                      tag!("4") => { |_| ZType::AccessWatchpoint }));
 
-named!(parse_cond_or_command_expression<&[u8], Vec<u8>>,
+named!(parse_cond_or_command_expression<&[u8], Bytecode>,
        do_parse!(tag!("X") >>
                  len: hex_value >>
                  tag!(",") >>
                  expr: take!(len) >>
-                 (expr.to_vec())));
+                 (Bytecode { bytecode: expr.to_vec() })));
 
-named!(parse_condition_list<&[u8], Vec<Vec<u8>>>,
+named!(parse_condition_list<&[u8], Vec<Bytecode>>,
        do_parse!(tag!(";") >>
                  list: many1!(parse_cond_or_command_expression) >>
                  (list)));
 
-fn maybe_condition_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Vec<u8>>>> {
+fn maybe_condition_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
     // An Incomplete here really means "not enough input to match a
     // condition list", and that's OK.  An Error is *probably* that the
     // input contains a command list rather than a condition list; the
@@ -506,7 +513,7 @@ fn maybe_condition_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Vec<u8>>
     }
 }
 
-named!(parse_command_list<&[u8], Vec<Vec<u8>>>,
+named!(parse_command_list<&[u8], Vec<Bytecode>>,
        // FIXME we drop the persistence flag here. 
        do_parse!(tag!(";cmds") >>
                  list: alt_complete!(do_parse!(persist_flag: hex_value >>
@@ -516,7 +523,7 @@ named!(parse_command_list<&[u8], Vec<Vec<u8>>>,
                                      many1!(parse_cond_or_command_expression)) >>
                  (list)));
 
-fn maybe_command_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Vec<u8>>>> {
+fn maybe_command_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
     // An Incomplete here really means "not enough input to match a
     // command list", and that's OK.
     match parse_command_list(i) {
@@ -526,8 +533,8 @@ fn maybe_command_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Vec<u8>>>>
     }
 }
 
-named!(parse_cond_and_command_list<&[u8], (Option<Vec<Vec<u8>>>,
-                                           Option<Vec<Vec<u8>>>)>,
+named!(parse_cond_and_command_list<&[u8], (Option<Vec<Bytecode>>,
+                                           Option<Vec<Bytecode>>)>,
        do_parse!(cond_list: maybe_condition_list >>
                  cmd_list: maybe_command_list >>
                  (cond_list, cmd_list)));
@@ -1549,6 +1556,12 @@ fn test_write_response() {
                "$QCpff.1#2f");
 }
 
+#[cfg(test)]
+macro_rules! bytecode {
+    ($elem:expr; $n:expr) => (Bytecode { bytecode: vec![$elem; $n] });
+    ($($x:expr),*) => (Bytecode { bytecode: vec!($($x),*) })
+}
+
 #[test]
 fn test_breakpoints() {
     assert_eq!(parse_z_packet(&b"Z0,1ff,0"[..]),
@@ -1574,49 +1587,49 @@ fn test_breakpoints() {
 
     assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0"[..]),
                Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(vec!('0' as u8))), None))));
+                                                                Some(vec!(bytecode!('0' as u8))), None))));
     assert_eq!(parse_z_packet(&b"Z1,1ff,2;X1,0"[..]),
                Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(vec!('0' as u8))), None))));
+                                                                Some(vec!(bytecode!('0' as u8))), None))));
 
     assert_eq!(parse_z_packet(&b"Z0,1ff,2;cmdsX1,z"[..]),
                Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                None, Some(vec!(vec!('z' as u8)))))));
+                                                                None, Some(vec!(bytecode!('z' as u8)))))));
     assert_eq!(parse_z_packet(&b"Z1,1ff,2;cmdsX1,z"[..]),
                Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                None, Some(vec!(vec!('z' as u8)))))));
+                                                                None, Some(vec!(bytecode!('z' as u8)))))));
 
     assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0;cmdsX1,a"[..]),
                Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(vec!('0' as u8))),
-                                                                Some(vec!(vec!('a' as u8)))))));
+                                                                Some(vec!(bytecode!('0' as u8))),
+                                                                Some(vec!(bytecode!('a' as u8)))))));
     assert_eq!(parse_z_packet(&b"Z1,1ff,2;X1,0;cmdsX1,a"[..]),
                Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(vec!('0' as u8))),
-                                                                Some(vec!(vec!('a' as u8)))))));
+                                                                Some(vec!(bytecode!('0' as u8))),
+                                                                Some(vec!(bytecode!('a' as u8)))))));
 }
 
 #[test]
 fn test_cond_or_command_list() {
     assert_eq!(parse_condition_list(&b";X1,a"[..]),
-               Done(&b""[..], vec!(vec!('a' as u8))));
+               Done(&b""[..], vec!(bytecode!('a' as u8))));
     assert_eq!(parse_condition_list(&b";X2,ab"[..]),
-               Done(&b""[..], vec!(vec!('a' as u8, 'b' as u8))));
+               Done(&b""[..], vec!(bytecode!('a' as u8, 'b' as u8))));
     assert_eq!(parse_condition_list(&b";X1,zX1,y"[..]),
-               Done(&b""[..], vec!(vec!('z' as u8),
-                                   vec!('y' as u8))));
+               Done(&b""[..], vec!(bytecode!('z' as u8),
+                                   bytecode!('y' as u8))));
     assert_eq!(parse_condition_list(&b";X1,zX10,yyyyyyyyyyyyyyyy"[..]),
-               Done(&b""[..], vec!(vec!('z' as u8),
-                                   vec!['y' as u8; 16])));
+               Done(&b""[..], vec!(bytecode!('z' as u8),
+                                   bytecode!['y' as u8; 16])));
 
     assert_eq!(parse_command_list(&b";cmdsX1,a"[..]),
-               Done(&b""[..], vec!(vec!('a' as u8))));
+               Done(&b""[..], vec!(bytecode!('a' as u8))));
     assert_eq!(parse_command_list(&b";cmdsX2,ab"[..]),
-               Done(&b""[..], vec!(vec!('a' as u8, 'b' as u8))));
+               Done(&b""[..], vec!(bytecode!('a' as u8, 'b' as u8))));
     assert_eq!(parse_command_list(&b";cmdsX1,zX1,y"[..]),
-               Done(&b""[..], vec!(vec!('z' as u8),
-                                   vec!('y' as u8))));
+               Done(&b""[..], vec!(bytecode!('z' as u8),
+                                   bytecode!('y' as u8))));
     assert_eq!(parse_command_list(&b";cmdsX1,zX10,yyyyyyyyyyyyyyyy"[..]),
-               Done(&b""[..], vec!(vec!('z' as u8),
-                                   vec!['y' as u8; 16])));
+               Done(&b""[..], vec!(bytecode!('z' as u8),
+                                   bytecode!['y' as u8; 16])));
 }
