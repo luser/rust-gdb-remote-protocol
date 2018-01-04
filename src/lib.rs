@@ -3,10 +3,10 @@
 //! targets.
 //!
 //! This library attempts to hide many of the protocol warts from
-//! servers.  It is also mildly opinionated, in that it implements
-//! certain features itself and requires users of the library to
-//! conform.  For example, it unconditionally implements the
-//! multiprocess and non-stop modes.
+//! server implementations.  It is also mildly opinionated, in that it
+//! implements certain features itself and requires users of the
+//! library to conform.  For example, it unconditionally implements
+//! the multiprocess and non-stop modes.
 //!
 //! ## Protocol Documentation
 //!
@@ -562,11 +562,12 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
 /// An error as returned by a `Handler` method.
 pub enum Error {
     /// A plain error.  The meaning of the value is not defined by the
-    /// protocol; so it can be used by a handler for debugging.
+    /// protocol.  Different values can therefore be used by a handler
+    /// for debugging purposes.
     Error(u8),
     /// The request is not implemented.  Note that, in some cases, the
-    /// protocol implementation claims that a feature is implemented;
-    /// if the protocol then returns `Unimplemented`, the client will
+    /// protocol implementation tells the client that a feature is implemented;
+    /// if the handler method then returns `Unimplemented`, the client will
     /// be confused.  So, normally it is best either to not implement
     /// a `Handler` method, or to return `Error` from implementations.
     Unimplemented,
@@ -623,9 +624,9 @@ pub enum StopReason {
 /// order for the server to work at all do not have a default
 /// implementation.
 pub trait Handler {
-    /// Return a vector additional features supported by this handler.
+    /// Return a vector of additional features supported by this handler.
     /// Note that there currently is no way to override the built-in
-    /// features that area always handled by the protocol
+    /// features that are always handled by the protocol
     /// implementation.
     fn query_supported_features(&self) -> Vec<String> {
         vec!()
@@ -683,7 +684,7 @@ pub trait Handler {
     }
 
     /// Return the general registers.  The registers are returned as a
-    /// vector of bytes, with the registers appearing back-to-back in
+    /// vector of bytes, with the registers appearing contiguously in
     /// a target-specific order, with the bytes laid out in the target
     /// byte order.
     fn read_general_registers(&self) -> Result<Vec<u8>, Error> {
@@ -691,7 +692,7 @@ pub trait Handler {
     }
 
     /// Write the general registers.  The registers are specified as a
-    /// vector of bytes, with the registers appearing back-to-back in
+    /// vector of bytes, with the registers appearing contiguously in
     /// a target-specific order, with the bytes laid out in the target
     /// byte order.
     fn write_general_registers(&self, _contents: &[u8]) -> Result<(), Error> {
