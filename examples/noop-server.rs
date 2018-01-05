@@ -1,3 +1,4 @@
+extern crate env_logger;
 extern crate gdb_remote_protocol;
 
 use gdb_remote_protocol::{Error,Handler,ProcessType,process_packets_from,StopReason};
@@ -17,6 +18,7 @@ impl Handler for NoopHandler {
 
 #[cfg_attr(test, allow(dead_code))]
 fn main() {
+    drop(env_logger::init());
     let listener = TcpListener::bind("0.0.0.0:2424").unwrap();
     println!("Listening on port 2424");
     for res in listener.incoming() {

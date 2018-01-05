@@ -647,7 +647,7 @@ pub enum Error {
 /// The `qAttached` packet lets the client distinguish between
 /// attached and created processes, so that it knows whether to send a
 /// detach request when disconnecting.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ProcessType {
     /// The process already existed and was attached to.
     Attached,
@@ -656,7 +656,7 @@ pub enum ProcessType {
 }
 
 /// The possible reasons for a thread to stop.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum StopReason {
     /// Process stopped due to a signal.
     Signal(u8),
@@ -892,6 +892,7 @@ fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
     bytes.iter().fold(init, |sum, &b| sum.wrapping_add(b))
 }
 
+#[derive(Debug)]
 enum Response<'a> {
     Empty,
     Ok,
@@ -1029,6 +1030,7 @@ fn write_thread_id<W>(writer: &mut W, thread_id: ThreadId) -> io::Result<()>
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     where W: Write,
 {
+    trace!("Response: {:?}", response);
     write!(writer, "$")?;
 
     let mut writer = PacketWriter::new(writer);
