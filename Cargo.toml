@@ -9,3 +9,7 @@ license = "Apache-2.0/MIT"
 nom = "3.2.0"
 strum = "0.8.0"
 strum_macros = "0.8.0"
+
+[dev-dependencies]
+assert_cli = "0.5.4"
+which = "1.0.3"

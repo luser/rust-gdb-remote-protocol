@@ -645,6 +645,7 @@ pub enum Error {
 /// The `qAttached` packet lets the client distinguish between
 /// attached and created processes, so that it knows whether to send a
 /// detach request when disconnecting.
+#[derive(Clone, Copy)]
 pub enum ProcessType {
     /// The process already existed and was attached to.
     Attached,
@@ -653,6 +654,7 @@ pub enum ProcessType {
 }
 
 /// The possible reasons for a thread to stop.
+#[derive(Clone, Copy)]
 pub enum StopReason {
     /// Process stopped due to a signal.
     Signal(u8),
