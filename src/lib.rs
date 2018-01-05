@@ -16,6 +16,8 @@
 #![deny(missing_docs)]
 
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate nom;
 extern crate strum;
 #[macro_use]
@@ -1122,7 +1124,7 @@ fn handle_packet<H, W>(data: &[u8],
     where H: Handler,
           W: Write,
 {
-    println!("Command: {}", str::from_utf8(data).unwrap());
+    debug!("Command: {}", String::from_utf8_lossy(data));
     let mut no_ack_mode = false;
     let response = if let Done(_, command) = command(data) {
         match command {

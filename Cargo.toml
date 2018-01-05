@@ -6,10 +6,12 @@ authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 license = "Apache-2.0/MIT"
 
 [dependencies]
+log = "0.4.1"
 nom = "3.2.0"
 strum = "0.8.0"
 strum_macros = "0.8.0"
 
 [dev-dependencies]
 assert_cli = "0.5.4"
+env_logger = "0.4.3"
 which = "1.0.3"

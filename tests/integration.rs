@@ -1,7 +1,21 @@
 // GDB integration tests
+//
+// These tests run a server using `TestHandler` as the handler and then run gdb in batch mode,
+// connect it to the server, feed it some commands, and exit. Tests can add assertions about the
+// gdb process such as matching stdout / stderr by calling `assert` and using the APIs from
+// assert-cli: https://docs.rs/assert_cli/ .
+//
+// The gdb executable to use is found from PATH.
+//
+// `gdb_test` configures logging using env_logger, so you can get log output from tests by running:
+// RUST_LOG=gdb_remote_protocol=trace,integration=trace cargo test -- --nocapture
+
 
 extern crate assert_cli;
+extern crate env_logger;
 extern crate gdb_remote_protocol;
+#[macro_use]
+extern crate log;
 extern crate which;
 
 use assert_cli::Assert;
@@ -79,6 +93,7 @@ impl GDBTestBuilder {
             process_packets_from(stream.try_clone().expect("TCPStream::try_clone failed!"),
                                  stream, handler);
         });
+        debug!("Running GDB as {:?}", assert);
         assert.unwrap();
         handle.join().expect("Failed to join server thread!");
     }
@@ -86,6 +101,7 @@ impl GDBTestBuilder {
 
 /// Create a `GDBTestBuilder` and return it.
 fn gdb_test() -> GDBTestBuilder {
+    drop(env_logger::init());
     // First, ensure that we have a GDB binary.
     let gdb = which::which("gdb").expect("Couldn't locate gdb!");
     let gdb_s = gdb.to_string_lossy();
