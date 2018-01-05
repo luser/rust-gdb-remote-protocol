@@ -2,6 +2,10 @@ language: rust
 sudo: false
 os:
 - linux
+addons:
+  apt:
+    packages:
+    - gdb
 rust:
   - nightly
   - beta
