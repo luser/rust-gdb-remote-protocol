@@ -16,6 +16,9 @@
 #![deny(missing_docs)]
 
 #[macro_use]
+extern crate bitflags;
+extern crate byteorder;
+#[macro_use]
 extern crate nom;
 extern crate strum;
 #[macro_use]
@@ -281,6 +284,23 @@ enum Command<'a> {
     RemoveReadWatchpoint(Watchpoint),
     /// Remove an access watchpoint.
     RemoveAccessWatchpoint(Watchpoint),
+    /// Open a file on the remote stub's filesystem.
+    /// TODO structured values for the flags and mode.
+    HostOpen(Vec<u8>, u64, u64),
+    /// Close an open filehandle from the remote stub's filesystem.
+    HostClose(u64),
+    /// Read data from an open filehandle from the remote stub's filesystem.
+    HostPRead(u64, u64, u64),
+    /// Write data to an open filehandle from the remote stub's filesystem.
+    HostPWrite(u64, u64, Vec<u8>),
+    /// Stat an open filehandle from the remote stub's filesystem.
+    HostFStat(u64),
+    /// Delete a file on the remote stub's filesystem.
+    HostUnlink(Vec<u8>),
+    /// Read a symbolic link on the remote stub's filesystem.
+    HostReadlink(Vec<u8>),
+    /// Set the filesystem for subsequent Host I/O operations, such as `HostOpen`.
+    HostSetFS(u64),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -454,11 +474,101 @@ named!(parse_thread_id<&[u8], ThreadId>,
 named!(parse_ping_thread<&[u8], ThreadId>,
        preceded!(tag!("T"), parse_thread_id));
 
+fn parse_vfile_open<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    println!("attempting vfile open! {:?}", i);
+    do_parse!(i,
+              tag!("open:") >>
+              filename: hex_byte_sequence >>
+              tag!(",") >>
+              flags: hex_value >>
+              tag!(",") >>
+              mode: hex_value >>
+              (Command::HostOpen(filename, flags, mode)))
+}
+
+fn parse_vfile_close<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("close:") >>
+              fd: hex_value >>
+              (Command::HostClose(fd)))
+}
+
+fn parse_vfile_pread<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("pread:") >>
+              fd: hex_value >>
+              tag!(",") >>
+              count: hex_value >>
+              tag!(",") >>
+              offset: hex_value >>
+              (Command::HostPRead(fd, count, offset)))
+}
+
+fn parse_vfile_pwrite<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("pwrite:") >>
+              fd: hex_value >>
+              tag!(",") >>
+              offset: hex_value >>
+              tag!(",") >>
+              data: binary_byte_sequence >>
+              (Command::HostPWrite(fd, offset, data)))
+}
+
+fn parse_vfile_fstat<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("fstat:") >>
+              fd: hex_value >>
+              (Command::HostFStat(fd)))
+}
+
+fn parse_vfile_unlink<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("unlink:") >>
+              filename: hex_byte_sequence >>
+              (Command::HostUnlink(filename)))
+}
+
+fn parse_vfile_readlink<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("readlink:") >>
+              filename: hex_byte_sequence >>
+              (Command::HostReadlink(filename)))
+}
+
+fn parse_vfile_setfs<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    do_parse!(i,
+              tag!("setfs:") >>
+              pid: hex_value >>
+              (Command::HostSetFS(pid)))
+}
+
+fn parse_unknown_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    // TODO: log the unknown operation for debugging purposes.
+    map!(i, take_till!(|_| { false}), { |_: &[u8]| Command::UnknownVCommand })
+}
+
+fn parse_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    alt_complete!(i,
+                  parse_vfile_open |
+                  parse_vfile_close |
+                  parse_vfile_pread |
+                  parse_vfile_pwrite |
+                  parse_vfile_fstat |
+                  parse_vfile_unlink |
+                  parse_vfile_readlink |
+                  parse_vfile_setfs |
+                  parse_unknown_vfile_op)
+}
+
 fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt_complete!(i,
                   tag!("vCtrlC") => { |_| Command::CtrlC }
                   | preceded!(tag!("vKill;"), hex_value) => {
                       |pid| Command::Kill(Some(pid))
+                  }
+                  | preceded!(tag!("vFile:"), parse_vfile_op) => {
+                      |c| c
                   }
                   // TODO: log the unknown command for debugging purposes.
                   | preceded!(tag!("v"), take_till!(|_| { false })) => {
@@ -651,6 +761,169 @@ pub enum ProcessType {
     /// The process was created by the server.
     Created,
 }
+
+bitflags! {
+    /// Host file permissions.
+    pub struct HostMode: u32 {
+        /// A regular file.
+        const S_IFREG = 0o100000;
+        /// A directory.
+        const S_IFDIR = 0o40000;
+        /// User read permissions.
+        const S_IRUSR = 0o400;
+        /// User write permissions.
+        const S_IWUSR = 0o200;
+        /// User execute permissions.
+        const S_IXUSR = 0o100;
+        /// Group read permissions.
+        const S_IRGRP = 0o40;
+        /// Group write permissions
+        const S_IWGRP = 0o20;
+        /// Group execute permissions.
+        const S_IXGRP = 0o10;
+        /// World read permissions.
+        const S_IROTH = 0o4;
+        /// World write permissions
+        const S_IWOTH = 0o2;
+        /// World execute permissions.
+        const S_IXOTH = 0o1;
+    }
+}
+
+bitflags! {
+    // The read/write flags below may look a little weird, but that is the way
+    // they are defined in the protocol.
+    /// Host flags for opening files.
+    pub struct HostOpenFlags: u32 {
+        /// A read-only file.
+        const O_RDONLY = 0x0;
+        /// A write-only file.
+        const O_WRONLY = 0x1;
+        /// A read-write file.
+        const O_RDWR = 0x2;
+        /// Append to an existing file.
+        const O_APPEND = 0x8;
+        /// Create a non-existent file.
+        const O_CREAT = 0x200;
+        /// Truncate an existing file.
+        const O_TRUNC = 0x400;
+        /// Exclusive access.
+        const O_EXCL = 0x800;
+    }
+}
+
+/// Data returned by a host fstat request.  The members of this structure are
+/// specified by the remote protocol; conversion of actual host stat
+/// information into this structure may therefore require truncation of some
+/// members.
+pub struct HostStat {
+    /// The device.
+    pub st_dev: u32,
+    /// The inode.
+    pub st_ino: u32,
+    /// Protection bits.
+    pub st_mode: u32,
+    /// The number of hard links.
+    pub st_nlink: u32,
+    /// The user id of the owner.
+    pub st_uid: u32,
+    /// The group id of the owner.
+    pub st_gid: u32,
+    /// The device type, if an inode device.
+    pub st_rdev: u32,
+    /// The size of the file in bytes.
+    pub st_size: u64,
+    /// The blocksize for the filesystem.
+    pub st_blksize: u64,
+    /// The number of blocks allocated.
+    pub st_blocks: u64,
+    /// The last time the file was accessed, in seconds since the epoch.
+    pub st_atime: u32,
+    /// The last time the file was modified, in seconds since the epoch.
+    pub st_mtime: u32,
+    /// The last time the file was changed, in seconds since the epoch.
+    pub st_ctime: u32,
+}
+
+// Having to write out all the fields for these two operations is annoying,
+// but the alternatives are even more annoying.  For instance, we could
+// represent HostStat as a big array, with fields at appropriate offsets, but
+// we'd have to write a bunch of accessor methods.  Note that #[repr(C)]
+// isn't quite good enough, since that might introduce C-mandated padding
+// into the structure.
+fn write_stat<W>(writer: &mut W, stat: HostStat) -> io::Result<()>
+    where W: Write
+{
+    use byteorder::{BigEndian, WriteBytesExt};
+
+    writer.write_u32::<BigEndian>(stat.st_dev)?;
+    writer.write_u32::<BigEndian>(stat.st_ino)?;
+    writer.write_u32::<BigEndian>(stat.st_mode)?;
+    writer.write_u32::<BigEndian>(stat.st_nlink)?;
+    writer.write_u32::<BigEndian>(stat.st_uid)?;
+    writer.write_u32::<BigEndian>(stat.st_gid)?;
+    writer.write_u32::<BigEndian>(stat.st_rdev)?;
+    writer.write_u64::<BigEndian>(stat.st_size)?;
+    writer.write_u64::<BigEndian>(stat.st_blksize)?;
+    writer.write_u64::<BigEndian>(stat.st_blocks)?;
+    writer.write_u32::<BigEndian>(stat.st_atime)?;
+    writer.write_u32::<BigEndian>(stat.st_mtime)?;
+    writer.write_u32::<BigEndian>(stat.st_ctime)
+}
+
+#[allow(dead_code)]
+fn read_stat(v: &[u8]) -> io::Result<HostStat> {
+    use byteorder::{BigEndian, ReadBytesExt};
+    use std::io::Cursor;
+
+    let mut r = Cursor::new(v);
+    let st_dev = r.read_u32::<BigEndian>()?;
+    let st_ino = r.read_u32::<BigEndian>()?;
+    let st_mode = r.read_u32::<BigEndian>()?;
+    let st_nlink = r.read_u32::<BigEndian>()?;
+    let st_uid = r.read_u32::<BigEndian>()?;
+    let st_gid = r.read_u32::<BigEndian>()?;
+    let st_rdev = r.read_u32::<BigEndian>()?;
+    let st_size = r.read_u64::<BigEndian>()?;
+    let st_blksize = r.read_u64::<BigEndian>()?;
+    let st_blocks = r.read_u64::<BigEndian>()?;
+    let st_atime = r.read_u32::<BigEndian>()?;
+    let st_mtime = r.read_u32::<BigEndian>()?;
+    let st_ctime = r.read_u32::<BigEndian>()?;
+
+    Ok(HostStat{ st_dev, st_ino, st_mode, st_nlink, st_uid, st_gid, st_rdev,
+                 st_size, st_blksize, st_blocks, st_atime, st_mtime, st_ctime })
+}
+
+/// Errno values for Host I/O operations.
+#[allow(missing_docs)]
+pub enum HostErrno {
+    EPERM = 1,
+    ENOENT = 2,
+    EINTR = 4,
+    EBADF = 9,
+    EACCES = 13,
+    EFAULT = 14,
+    EBUSY = 16,
+    EEXIST = 17,
+    ENODEV = 19,
+    ENOTDIR = 20,
+    EISDIR = 21,
+    EINVAL = 22,
+    ENFILE = 23,
+    EMFILE = 24,
+    EFBIG = 27,
+    ENOSPC = 28,
+    ESPIPE = 29,
+    EROFS = 30,
+    ENAMETOOLONG = 91,
+    EUNKNOWN = 9999,
+}
+
+/// The result type for host I/O operations.  Return error if the operation
+/// in question is not implemented.  Otherwise, the success type indicates
+/// whether the operation succeeded, with `HostErrno` values for failure.
+pub type IOResult<T> = Result<Result<T, HostErrno>, ()>;
 
 /// The possible reasons for a thread to stop.
 pub enum StopReason {
@@ -882,10 +1155,60 @@ pub trait Handler {
     fn remove_access_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Open a file on the remote stub's current filesystem.
+    fn host_open(&self, _filename: Vec<u8>, _flags: u64, _mode: u64) -> IOResult<u64> {
+        Err(())
+    }
+
+    /// Close a file opened with `host_open`.
+    fn host_close(&self, _fd: u64) -> IOResult<()> {
+        Err(())
+    }
+
+    /// Read data from an open file at the given offset.
+    fn host_pread(&self, _fd: u64, _count: u64, _offset: u64) -> IOResult<Vec<u8>> {
+        Err(())
+    }
+
+    /// Write data to an open file at the given offset.
+    fn host_pwrite(&self, _fd: u64, _offset: u64, _data: Vec<u8>) -> IOResult<u64> {
+        Err(())
+    }
+
+    /// Return a `HostStat` describing the attributes of the given open file.
+    fn host_fstat(&self, _fd: u64) -> IOResult<HostStat> {
+        Err(())
+    }
+
+    /// Remove a file from the remote stub's current filesystem.
+    fn host_unlink(&self, _filename: Vec<u8>) -> IOResult<()> {
+        Err(())
+    }
+
+    /// Read the contents of a symbolic link on the remote stub's current filesystem.
+    fn host_readlink(&self, _filename: Vec<u8>) -> IOResult<Vec<u8>> {
+        Err(())
+    }
+
+    /// Set the current filesystem for subsequent host I/O requests.  If the
+    /// given pid is 0, select the filesystem of the remote stub.  Otherwise,
+    /// select the filesystem as seen by the process with the given pid.
+    fn host_setfs(&self, _pid: u64) -> IOResult<()> {
+        Err(())
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
     bytes.iter().fold(init, |sum, &b| sum.wrapping_add(b))
+}
+
+enum HostIOResult {
+    Ok,                         // close, unlink, setfs
+    Error(HostErrno),           // error result for any operation
+    Integer(u64),               // open, pwrite
+    Data(Vec<u8>),              // pread, readlink
+    Stat(HostStat),             // fstat
 }
 
 enum Response<'a> {
@@ -899,6 +1222,7 @@ enum Response<'a> {
     ProcessType(ProcessType),
     Stopped(StopReason),
     SearchResult(Option<u64>),
+    HostIOResult(HostIOResult),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -909,6 +1233,57 @@ impl<'a, T> From<Result<T, Error>> for Response<'a>
             Result::Ok(val) => val.into(),
             Result::Err(Error::Error(val)) => Response::Error(val),
             Result::Err(Error::Unimplemented) => Response::Empty,
+        }
+    }
+}
+
+impl<'a, T> From<Result<T, HostErrno>> for HostIOResult
+    where HostIOResult: From<T>
+{
+    fn from(result: Result<T, HostErrno>) -> Self {
+        match result {
+            Result::Ok(val) => val.into(),
+            Result::Err(errno) => HostIOResult::Error(errno),
+        }
+    }
+}
+
+impl From<()> for HostIOResult
+{
+    fn from(_: ()) -> Self {
+        HostIOResult::Ok
+    }
+}
+
+impl From<u64> for HostIOResult
+{
+    fn from(i: u64) -> Self {
+        HostIOResult::Integer(i)
+    }
+}
+
+impl From<Vec<u8>> for HostIOResult
+{
+    fn from(data: Vec<u8>) -> Self {
+        HostIOResult::Data(data)
+    }
+}
+
+impl From<HostStat> for HostIOResult
+{
+    fn from(stat: HostStat) -> Self {
+        HostIOResult::Stat(stat)
+    }
+}
+
+impl<'a, T> From<IOResult<T>> for Response<'a>
+    where HostIOResult: From<T>
+{
+    fn from(result: IOResult<T>) -> Self {
+        match result {
+            Result::Ok(val) => Response::HostIOResult(val.into()),
+            // Indicates the operation wasn't supported.
+            Result::Err(_) => Response::Empty,
         }
     }
 }
@@ -961,6 +1336,13 @@ impl<'a> From<String> for Response<'a>
 {
     fn from(reason: String) -> Self {
         Response::String(Cow::Owned(reason) as Cow<str>)
+    }
+}
+
+impl<'a> From<HostIOResult> for Response<'a>
+{
+    fn from(result: HostIOResult) -> Self {
+        Response::HostIOResult(result)
     }
 }
 
@@ -1019,6 +1401,38 @@ fn write_thread_id<W>(writer: &mut W, thread_id: ThreadId) -> io::Result<()>
         Id::All => write!(writer, "-1"),
         Id::Any => write!(writer, "0"),
         Id::Id(num) => write!(writer, "{:x}", num),
+    }
+}
+
+impl From<HostStat> for Vec<u8>
+{
+    fn from(stat: HostStat) -> Self {
+        let mut v = vec![];
+        // XXX: this can technically fail, and we shouldn't be ignoring it.
+        write_stat(&mut v, stat).unwrap();
+        v
+    }
+}
+
+fn write_binary_data<W>(writer: &mut W, data: Vec<u8>) -> io::Result<()>
+    where W: Write,
+{
+    let mut v: &[u8] = &data;
+
+    while let Some(p) = v.iter().position(&needs_escape) {
+        let (head, rest) = data.split_at(p);
+        writer.write_all(head)?;
+
+        let tmp = [0x7d, rest[0] ^ 0x20];
+        writer.write_all(&tmp)?;
+
+        v = &rest[1..];
+    }
+
+    return writer.write_all(&v);
+
+    fn needs_escape(byte: &u8) -> bool {
+        *byte == 0x23 || *byte == 0x24 || *byte == 0x7d || *byte == 0x2a
     }
 }
 
@@ -1091,6 +1505,23 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                     write_thread_id(&mut writer, thread_id)?;
                 },
                 StopReason::NoMoreThreads => write!(writer, "N")?,
+            }
+        }
+        Response::HostIOResult(result) => {
+            match result {
+                HostIOResult::Ok => write!(writer, "F0")?,
+                HostIOResult::Error(errno) => {
+                    write!(writer, "F-1,{:x}", errno as u32)?;
+                },
+                HostIOResult::Integer(i) => write!(writer, "F{:x}", i)?,
+                HostIOResult::Data(v) => {
+                    write!(writer, "F{:x};", v.len())?;
+                    write_binary_data(&mut writer, v)?;
+                },
+                HostIOResult::Stat(stat) => {
+                    write!(writer, "F0;")?;
+                    write_binary_data(&mut writer, stat.into())?
+                },
             }
         }
     }
@@ -1252,6 +1683,31 @@ fn handle_packet<H, W>(data: &[u8],
             }
             Command::RemoveAccessWatchpoint(wp) => {
                 handler.remove_access_watchpoint(wp).into()
+            }
+
+            Command::HostOpen(filename, mode, flags) => {
+                handler.host_open(filename, mode, flags).into()
+            }
+            Command::HostClose(fd) => {
+                handler.host_close(fd).into()
+            }
+            Command::HostPRead(fd, count, offset) => {
+                handler.host_pread(fd, count, offset).into()
+            }
+            Command::HostPWrite(fd, offset, data) => {
+                handler.host_pwrite(fd, offset, data).into()
+            }
+            Command::HostFStat(fd) => {
+                handler.host_fstat(fd).into()
+            }
+            Command::HostUnlink(filename) => {
+                handler.host_unlink(filename).into()
+            }
+            Command::HostReadlink(filename) => {
+                handler.host_readlink(filename).into()
+            }
+            Command::HostSetFS(pid) => {
+                handler.host_setfs(pid).into()
             }
         }
     } else { Response::Empty };
@@ -1465,7 +1921,26 @@ fn test_parse_v_commands() {
                Done(&b""[..], Command::CtrlC));
     assert_eq!(v_command(&b"vMustReplyEmpty"[..]),
                Done(&b""[..], Command::UnknownVCommand));
-    assert_eq!(v_command(&b"vFile:close:0"[..]),
+
+    assert_eq!(v_command(&b"vFile:open:2f766d6c696e757a,0,0"[..]),
+               Done(&b""[..], Command::HostOpen(vec!(47, 118, 109, 108, 105, 110, 117, 122), 0, 0)));
+    assert_eq!(v_command(&b"vFile:close:85"[..]),
+               Done(&b""[..], Command::HostClose(0x85)));
+    assert_eq!(v_command(&b"vFile:pread:5,96,327"[..]),
+               Done(&b""[..], Command::HostPRead(5, 0x96, 0x327)));
+    assert_eq!(v_command(&b"vFile:pwrite:6,83,\x00"[..]),
+               Done(&b""[..], Command::HostPWrite(6, 0x83, vec![0])));
+    assert_eq!(v_command(&b"vFile:pwrite:6,83,\x7d\x5d"[..]),
+               Done(&b""[..], Command::HostPWrite(6, 0x83, vec![0x7d])));
+    assert_eq!(v_command(&b"vFile:fstat:32"[..]),
+               Done(&b""[..], Command::HostFStat(0x32)));
+    assert_eq!(v_command(&b"vFile:unlink:2f766d6c696e757a"[..]),
+               Done(&b""[..], Command::HostUnlink(vec!(47, 118, 109, 108, 105, 110, 117, 122))));
+    assert_eq!(v_command(&b"vFile:readlink:2f766d6c696e757a"[..]),
+               Done(&b""[..], Command::HostReadlink(vec!(47, 118, 109, 108, 105, 110, 117, 122))));
+    assert_eq!(v_command(&b"vFile:setfs:0"[..]),
+               Done(&b""[..], Command::HostSetFS(0)));
+    assert_eq!(v_command(&b"vFile:fdopen:0"[..]),
                Done(&b""[..], Command::UnknownVCommand));
 }
 
@@ -1646,4 +2121,31 @@ fn test_cond_or_command_list() {
     assert_eq!(parse_command_list(&b";cmdsX1,zX10,yyyyyyyyyyyyyyyy"[..]),
                Done(&b""[..], vec!(bytecode!('z' as u8),
                                    bytecode!['y' as u8; 16])));
+}
+
+#[test]
+fn test_write_binary_data() {
+    // Ordinary data, no escapes.
+    check(vec!(1, 2, 3), vec!(1, 2, 3));
+    // Escape required at the beginning.
+    check(vec!(0x7d, 2, 3), vec!(0x7d, 0x5d, 2, 3));
+    check(vec!(0x23, 2, 3), vec!(0x7d, 0x03, 2, 3));
+    check(vec!(0x24, 2, 3), vec!(0x7d, 0x04, 2, 3));
+    check(vec!(0x2a, 2, 3), vec!(0x7d, 0x0a, 2, 3));
+    // Escape required at the end.
+    check(vec!(8, 9, 0x7d), vec!(8, 9, 0x7d, 0x5d));
+    check(vec!(8, 9, 0x23), vec!(8, 9, 0x7d, 0x03));
+    check(vec!(8, 9, 0x24), vec!(8, 9, 0x7d, 0x04));
+    check(vec!(8, 9, 0x2a), vec!(8, 9, 0x7d, 0x0a));
+    // Escape required in the middle.
+    check(vec!(8, 9, 0x7d, 5, 6), vec!(8, 9, 0x7d, 0x5d, 5, 6));
+    check(vec!(8, 9, 0x23, 5, 6), vec!(8, 9, 0x7d, 0x03, 5, 6));
+    check(vec!(8, 9, 0x24, 5, 6), vec!(8, 9, 0x7d, 0x04, 5, 6));
+    check(vec!(8, 9, 0x2a, 5, 6), vec!(8, 9, 0x7d, 0x0a, 5, 6));
+
+    fn check(data: Vec<u8>, output: Vec<u8>) {
+        let mut v = vec![];
+        write_binary_data(&mut v, data).unwrap();
+        assert_eq!(v, output);
+    }
 }
