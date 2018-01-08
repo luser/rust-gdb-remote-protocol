@@ -10,6 +10,8 @@ log = "0.4.1"
 nom = "3.2.0"
 strum = "0.8.0"
 strum_macros = "0.8.0"
+bitflags = "1.0"
+byteorder = "1.2"
 memchr = "2.3.3"
 
 [dev-dependencies]
