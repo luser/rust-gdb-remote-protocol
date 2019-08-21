@@ -248,7 +248,7 @@ pub enum VContFeature {
     /// Indicate that you support stopping a thread
     Stop = b't',
     /// Indicate that you support singlestepping while inside of a range
-    RangeStop = b'r',
+    RangeStep = b'r',
 }
 
 /// vCont commands
@@ -396,7 +396,7 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
                       |syscalls| Query::CatchSyscalls(Some(syscalls))
                   }
                   | preceded!(tag!("QPassSignals:"),
-                              separated_nonempty_list_complete!(tag!(";"), hex_value)) => {
+                              separated_list_complete!(tag!(";"), hex_value)) => {
                       |signals| Query::PassSignals(signals)
                   }
                   | preceded!(tag!("QProgramSignals:"),
@@ -1189,7 +1189,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         Response::VContFeatures(features) => {
             write!(writer, "vCont")?;
             for &feature in &*features {
-                write!(writer, "{}", feature as u8 as char)?;
+                write!(writer, ";{}", feature as u8 as char)?;
             }
         }
     }
@@ -1639,6 +1639,8 @@ fn test_parse_syscalls() {
 
 #[test]
 fn test_parse_signals() {
+    assert_eq!(query(&b"QPassSignals:"[..]),
+               Done(&b""[..], Query::PassSignals(vec!())));
     assert_eq!(query(&b"QPassSignals:0"[..]),
                Done(&b""[..], Query::PassSignals(vec!(0))));
     assert_eq!(query(&b"QPassSignals:1;2;ff"[..]),
