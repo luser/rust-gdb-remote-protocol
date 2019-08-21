@@ -28,6 +28,7 @@ use nom::{IResult, Needed};
 use std::borrow::Cow;
 use std::convert::From;
 use std::io::{self,BufRead,BufReader,Read,Write};
+use std::ops::Range;
 use std::str::{self, FromStr};
 
 const MAX_PACKET_SIZE: usize = 65 * 1024;
@@ -231,6 +232,47 @@ impl MemoryRegion {
     }
 }
 
+/// The name of certain vCont features to be addressed when queried
+/// for which are supported.
+#[repr(u8)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum VContFeature {
+    /// Indicate that you support continuing until breakpoint
+    Continue = b'c',
+    /// Indicate that you support continuing with a signal
+    ContinueWithSignal = b'C',
+    /// Indicate that you support singlestepping one instruction
+    Step = b's',
+    /// Indicate that you support singlestepping with a signal
+    StepWithSignal = b'S',
+    /// Indicate that you support stopping a thread
+    Stop = b't',
+    /// Indicate that you support singlestepping while inside of a range
+    RangeStop = b'r',
+}
+
+/// vCont commands
+#[derive(Clone, Debug, PartialEq)]
+pub enum VCont {
+    /// Continue until breakpoint, signal or exit
+    Continue,
+    /// Like `Continue`, but replace any current signal with a
+    /// specified one
+    ContinueWithSignal(u8),
+    /// Step one machine instruction
+    Step,
+    /// Like `Step`, but replace any current signal with a specified
+    /// one
+    StepWithSignal(u8),
+    /// Only relevant in non-stop mode. Stop a thread and when
+    /// queried, indicate a stop with signal 0
+    Stop,
+    /// Keep stepping until instruction pointer is outside of
+    /// specified range. May also spuriously stop, such as when a
+    /// breakpoint is reached.
+    RangeStep(Range<u64>),
+}
+
 /// GDB remote protocol commands, as defined in (the GDB documentation)[1]
 /// [1]: https://sourceware.org/gdb/onlinedocs/gdb/Packets.html#Packets
 #[derive(Clone, Debug, PartialEq)]
@@ -283,6 +325,11 @@ enum Command<'a> {
     RemoveReadWatchpoint(Watchpoint),
     /// Remove an access watchpoint.
     RemoveAccessWatchpoint(Watchpoint),
+    /// Query for a list of supported vCont features.
+    VContSupported,
+    /// Resume with different actions for each thread. Choose the
+    /// first matching thread in the list.
+    VCont(Vec<(VCont, Option<ThreadId>)>),
 }
 
 named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
@@ -459,6 +506,27 @@ named!(parse_ping_thread<&[u8], ThreadId>,
 fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt_complete!(i,
                   tag!("vCtrlC") => { |_| Command::CtrlC }
+                  | preceded!(tag!("vCont"),
+                              alt_complete!(tag!("?") => { |_| Command::VContSupported }
+                                            | many0!(do_parse!(
+                                                tag!(";") >>
+                                                action: alt_complete!(tag!("c") => { |_| VCont::Continue }
+                                                                      | preceded!(tag!("C"), hex_byte) => { |sig| VCont::ContinueWithSignal(sig) }
+                                                                      | tag!("s") => { |_| VCont::Step }
+                                                                      | preceded!(tag!("S"), hex_byte) => { |sig| VCont::StepWithSignal(sig) }
+                                                                      | tag!("t") => { |_| VCont::Stop }
+                                                                      | do_parse!(tag!("r") >>
+                                                                                  start: hex_value >>
+                                                                                  tag!(",") >>
+                                                                                  end: hex_value >>
+                                                                                  (start, end)) => { |(start, end)| VCont::RangeStep(start..end) }
+                                                ) >>
+                                                thread: opt!(complete!(preceded!(tag!(":"), parse_thread_id))) >>
+                                                (action, thread)
+                                            )) => { |actions| Command::VCont(actions) }
+                              )) => {
+                      |c| c
+                  }
                   | preceded!(tag!("vKill;"), hex_value) => {
                       |pid| Command::Kill(Some(pid))
                   }
@@ -886,6 +954,17 @@ pub trait Handler {
     fn remove_access_watchpoint(&self, _watchpoint: Watchpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
+
+    /// Query for a list of supported vCont features.
+    fn query_supported_vcont(&self) -> Result<Vec<VContFeature>, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Resume with different actions for each thread. Choose the
+    /// first matching thread in the list.
+    fn vcont(&self, _request: Vec<(VCont, Option<ThreadId>)>) -> Result<StopReason, Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -904,6 +983,7 @@ enum Response<'a> {
     ProcessType(ProcessType),
     Stopped(StopReason),
     SearchResult(Option<u64>),
+    VContFeatures(Vec<VContFeature>),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -966,6 +1046,13 @@ impl<'a> From<String> for Response<'a>
 {
     fn from(reason: String) -> Self {
         Response::String(Cow::Owned(reason) as Cow<str>)
+    }
+}
+
+impl<'a> From<Vec<VContFeature>> for Response<'a>
+{
+    fn from(features: Vec<VContFeature>) -> Self {
+        Response::VContFeatures(features)
     }
 }
 
@@ -1097,6 +1184,12 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                     write_thread_id(&mut writer, thread_id)?;
                 },
                 StopReason::NoMoreThreads => write!(writer, "N")?,
+            }
+        }
+        Response::VContFeatures(features) => {
+            write!(writer, "vCont")?;
+            for feature in features {
+                write!(writer, "{}", feature as u8 as char)?;
             }
         }
     }
@@ -1258,6 +1351,12 @@ fn handle_packet<H, W>(data: &[u8],
             }
             Command::RemoveAccessWatchpoint(wp) => {
                 handler.remove_access_watchpoint(wp).into()
+            }
+            Command::VContSupported => {
+                handler.query_supported_vcont().into()
+            }
+            Command::VCont(list) => {
+                handler.vcont(list).into()
             }
         }
     } else { Response::Empty };
@@ -1473,6 +1572,17 @@ fn test_parse_v_commands() {
                Done(&b""[..], Command::UnknownVCommand));
     assert_eq!(v_command(&b"vFile:close:0"[..]),
                Done(&b""[..], Command::UnknownVCommand));
+
+    assert_eq!(v_command(&b"vCont?"[..]),
+               Done(&b""[..], Command::VContSupported));
+    assert_eq!(v_command(&b"vCont"[..]),
+               Done(&b""[..], Command::VCont(Vec::new())));
+    assert_eq!(v_command(&b"vCont;c"[..]),
+               Done(&b""[..], Command::VCont(vec![(VCont::Continue, None)])));
+    assert_eq!(v_command(&b"vCont;r1,2:p34.56;SAD:-1;c"[..]),
+               Done(&b""[..], Command::VCont(vec![(VCont::RangeStep(1..2), Some(ThreadId{pid: Id::Id(0x34), tid: Id::Id(0x56)})),
+                                                  (VCont::StepWithSignal(0xAD), Some(ThreadId{pid: Id::All, tid: Id::Any})),
+                                                  (VCont::Continue, None)])));
 }
 
 #[test]
