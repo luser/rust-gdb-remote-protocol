@@ -235,7 +235,7 @@ impl MemoryRegion {
 /// The name of certain vCont features to be addressed when queried
 /// for which are supported.
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VContFeature {
     /// Indicate that you support continuing until breakpoint
     Continue = b'c',
@@ -956,7 +956,7 @@ pub trait Handler {
     }
 
     /// Query for a list of supported vCont features.
-    fn query_supported_vcont(&self) -> Result<Vec<VContFeature>, Error> {
+    fn query_supported_vcont(&self) -> Result<Cow<'static, [VContFeature]>, Error> {
         Err(Error::Unimplemented)
     }
 
@@ -983,7 +983,7 @@ enum Response<'a> {
     ProcessType(ProcessType),
     Stopped(StopReason),
     SearchResult(Option<u64>),
-    VContFeatures(Vec<VContFeature>),
+    VContFeatures(Cow<'static, [VContFeature]>),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -1049,9 +1049,9 @@ impl<'a> From<String> for Response<'a>
     }
 }
 
-impl<'a> From<Vec<VContFeature>> for Response<'a>
+impl<'a> From<Cow<'static, [VContFeature]>> for Response<'a>
 {
-    fn from(features: Vec<VContFeature>) -> Self {
+    fn from(features: Cow<'static, [VContFeature]>) -> Self {
         Response::VContFeatures(features)
     }
 }
@@ -1188,7 +1188,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         }
         Response::VContFeatures(features) => {
             write!(writer, "vCont")?;
-            for feature in features {
+            for &feature in &*features {
                 write!(writer, "{}", feature as u8 as char)?;
             }
         }
