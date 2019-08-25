@@ -27,12 +27,11 @@ use nom::IResult::*;
 use nom::{IResult, Needed};
 use std::borrow::Cow;
 use std::convert::From;
-use std::io::{self,BufRead,BufReader,Read,Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::ops::Range;
 use std::str::{self, FromStr};
 
 const MAX_PACKET_SIZE: usize = 65 * 1024;
-
 
 named!(checksum<&[u8], u8>,
        map_res!(map_res!(take!(2), str::from_utf8),
@@ -46,7 +45,7 @@ named!(packet<&[u8], (Vec<u8>, u8)>,
                                  tag!("#"),
                                  checksum)));
 
-#[derive(Debug,PartialEq,Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Packet {
     Ack,
     Nack,
@@ -54,12 +53,15 @@ enum Packet {
     Data(Vec<u8>, u8),
 }
 
-named!(packet_or_response<Packet>, alt!(
+named!(
+    packet_or_response<Packet>,
+    alt!(
     packet => { |(d, chk)| Packet::Data(d, chk) }
     | tag!("+") => { |_| Packet::Ack }
     | tag!("-") => { |_| Packet::Nack }
     | tag!("\x03") => { |_| Packet::Interrupt }
-    ));
+    )
+);
 
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, EnumString, PartialEq)]
@@ -69,15 +71,15 @@ enum GDBFeature {
     qRelocInsn,
     swbreak,
     hwbreak,
-    #[strum(serialize="fork-events")]
+    #[strum(serialize = "fork-events")]
     fork_events,
-    #[strum(serialize="vfork-events")]
+    #[strum(serialize = "vfork-events")]
     vfork_events,
-    #[strum(serialize="exec-events")]
+    #[strum(serialize = "exec-events")]
     exec_events,
     vContSupported,
     // these are not listed in the docs but GDB sends them
-    #[strum(serialize="no-resumed")]
+    #[strum(serialize = "no-resumed")]
     no_resumed,
     QThreadEvents,
 }
@@ -110,7 +112,11 @@ enum Query<'a> {
     /// Return the current thread ID.
     CurrentThread,
     /// Search memory for some bytes.
-    SearchMemory { address: u64, length: u64, bytes: Vec<u8> },
+    SearchMemory {
+        address: u64,
+        length: u64,
+        bytes: Vec<u8>,
+    },
     /// Compute the CRC checksum of a block of memory.
     // Uncomment this when qC is implemented.
     // #[allow(unused)]
@@ -173,7 +179,7 @@ pub struct Watchpoint {
 
 impl Watchpoint {
     fn new(addr: u64, n_bytes: u64) -> Watchpoint {
-        Watchpoint{addr, n_bytes}
+        Watchpoint { addr, n_bytes }
     }
 }
 
@@ -181,7 +187,7 @@ impl Watchpoint {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bytecode {
     /// The bytecodes.
-    pub bytecode: Vec<u8>
+    pub bytecode: Vec<u8>,
 }
 
 /// A descriptor for a breakpoint.  The particular implementation technique
@@ -211,9 +217,18 @@ pub struct Breakpoint {
 }
 
 impl Breakpoint {
-    fn new(addr: u64, kind: u64, conditions: Option<Vec<Bytecode>>,
-           commands: Option<Vec<Bytecode>>) -> Breakpoint {
-        Breakpoint{addr, kind, conditions, commands}
+    fn new(
+        addr: u64,
+        kind: u64,
+        conditions: Option<Vec<Bytecode>>,
+        commands: Option<Vec<Bytecode>>,
+    ) -> Breakpoint {
+        Breakpoint {
+            addr,
+            kind,
+            conditions,
+            commands,
+        }
     }
 }
 
@@ -228,7 +243,7 @@ pub struct MemoryRegion {
 
 impl MemoryRegion {
     fn new(address: u64, length: u64) -> MemoryRegion {
-        MemoryRegion{address, length}
+        MemoryRegion { address, length }
     }
 }
 
@@ -332,28 +347,37 @@ enum Command<'a> {
     VCont(Vec<(VCont, Option<ThreadId>)>),
 }
 
-named!(gdbfeature<Known>, map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
-    match GDBFeature::from_str(s) {
-        Ok(f) => Known::Yes(f),
-        Err(_) => Known::No(s),
-    }
-}));
+named!(
+    gdbfeature<Known>,
+    map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
+        match GDBFeature::from_str(s) {
+            Ok(f) => Known::Yes(f),
+            Err(_) => Known::No(s),
+        }
+    })
+);
 
 fn gdbfeaturesupported<'a>(i: &'a [u8]) -> IResult<&'a [u8], GDBFeatureSupported<'a>> {
     flat_map!(i, is_not!(";"), |f: &'a [u8]| {
         match f.split_last() {
             None => IResult::Incomplete(Needed::Size(2)),
-            Some((&b'+', first)) => {
-                map!(first, gdbfeature, |feat| GDBFeatureSupported(feat, FeatureSupported::Yes))
-            }
-            Some((&b'-', first)) => {
-                map!(first, gdbfeature, |feat| GDBFeatureSupported(feat, FeatureSupported::No))
-            }
-            Some((_, _)) => {
-                map!(f, separated_pair!(gdbfeature, tag!("="),
-                                        map_res!(is_not!(";"), str::from_utf8)),
-                     |(feat, value)| GDBFeatureSupported(feat, FeatureSupported::Value(value)))
-            }
+            Some((&b'+', first)) => map!(first, gdbfeature, |feat| GDBFeatureSupported(
+                feat,
+                FeatureSupported::Yes
+            )),
+            Some((&b'-', first)) => map!(first, gdbfeature, |feat| GDBFeatureSupported(
+                feat,
+                FeatureSupported::No
+            )),
+            Some((_, _)) => map!(
+                f,
+                separated_pair!(
+                    gdbfeature,
+                    tag!("="),
+                    map_res!(is_not!(";"), str::from_utf8)
+                ),
+                |(feat, value)| GDBFeatureSupported(feat, FeatureSupported::Value(value))
+            ),
         }
     })
 }
@@ -370,43 +394,43 @@ named!(q_search_memory<&[u8], (u64, u64, Vec<u8>)>,
 
 fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     alt_complete!(i,
-                  tag!("qC") => { |_| Query::CurrentThread }
-                  | preceded!(tag!("qSupported"),
-                              preceded!(tag!(":"),
-                                        separated_list_complete!(tag!(";"),
-                                                                 gdbfeaturesupported))) => {
-                      |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
-                  }
-                  | preceded!(tag!("qRcmd,"), hex_byte_sequence) => {
-                      |bytes| Query::Invoke(bytes)
-                  }
-                  | q_search_memory => {
-                      |(address, length, bytes)| Query::SearchMemory { address, length, bytes }
-                  }
-                  | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
-                  | preceded!(tag!("qAttached:"), hex_value) => {
-                      |value| Query::Attached(Some(value))
-                  }
-                  | tag!("qAttached") => { |_| Query::Attached(None) }
-                  | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
-                  | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
-                  | tag!("QCatchSyscalls:0") => { |_| Query::CatchSyscalls(None) }
-                  | preceded!(tag!("QCatchSyscalls:1"),
-                              many0!(preceded!(tag!(";"), hex_value))) => {
-                      |syscalls| Query::CatchSyscalls(Some(syscalls))
-                  }
-                  | preceded!(tag!("QPassSignals:"),
-                              separated_list_complete!(tag!(";"), hex_value)) => {
-                      |signals| Query::PassSignals(signals)
-                  }
-                  | preceded!(tag!("QProgramSignals:"),
-                              separated_nonempty_list_complete!(tag!(";"), hex_value)) => {
-                      |signals| Query::ProgramSignals(signals)
-                  }
-                  | preceded!(tag!("qThreadExtraInfo,"), parse_thread_id) => {
-                      |thread_id| Query::ThreadInfo(thread_id)
-                  }
-                  )
+    tag!("qC") => { |_| Query::CurrentThread }
+    | preceded!(tag!("qSupported"),
+                preceded!(tag!(":"),
+                          separated_list_complete!(tag!(";"),
+                                                   gdbfeaturesupported))) => {
+        |features: Vec<GDBFeatureSupported<'a>>| Query::SupportedFeatures(features)
+    }
+    | preceded!(tag!("qRcmd,"), hex_byte_sequence) => {
+        |bytes| Query::Invoke(bytes)
+    }
+    | q_search_memory => {
+        |(address, length, bytes)| Query::SearchMemory { address, length, bytes }
+    }
+    | tag!("QStartNoAckMode") => { |_| Query::StartNoAckMode }
+    | preceded!(tag!("qAttached:"), hex_value) => {
+        |value| Query::Attached(Some(value))
+    }
+    | tag!("qAttached") => { |_| Query::Attached(None) }
+    | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
+    | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
+    | tag!("QCatchSyscalls:0") => { |_| Query::CatchSyscalls(None) }
+    | preceded!(tag!("QCatchSyscalls:1"),
+                many0!(preceded!(tag!(";"), hex_value))) => {
+        |syscalls| Query::CatchSyscalls(Some(syscalls))
+    }
+    | preceded!(tag!("QPassSignals:"),
+                separated_list_complete!(tag!(";"), hex_value)) => {
+        |signals| Query::PassSignals(signals)
+    }
+    | preceded!(tag!("QProgramSignals:"),
+                separated_nonempty_list_complete!(tag!(";"), hex_value)) => {
+        |signals| Query::ProgramSignals(signals)
+    }
+    | preceded!(tag!("qThreadExtraInfo,"), parse_thread_id) => {
+        |thread_id| Query::ThreadInfo(thread_id)
+    }
+    )
 }
 
 // TODO: should the caller be responsible for determining whether they actually
@@ -505,35 +529,35 @@ named!(parse_ping_thread<&[u8], ThreadId>,
 
 fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt_complete!(i,
-                  tag!("vCtrlC") => { |_| Command::CtrlC }
-                  | preceded!(tag!("vCont"),
-                              alt_complete!(tag!("?") => { |_| Command::VContSupported }
-                                            | many0!(do_parse!(
-                                                tag!(";") >>
-                                                action: alt_complete!(tag!("c") => { |_| VCont::Continue }
-                                                                      | preceded!(tag!("C"), hex_byte) => { |sig| VCont::ContinueWithSignal(sig) }
-                                                                      | tag!("s") => { |_| VCont::Step }
-                                                                      | preceded!(tag!("S"), hex_byte) => { |sig| VCont::StepWithSignal(sig) }
-                                                                      | tag!("t") => { |_| VCont::Stop }
-                                                                      | do_parse!(tag!("r") >>
-                                                                                  start: hex_value >>
-                                                                                  tag!(",") >>
-                                                                                  end: hex_value >>
-                                                                                  (start, end)) => { |(start, end)| VCont::RangeStep(start..end) }
-                                                ) >>
-                                                thread: opt!(complete!(preceded!(tag!(":"), parse_thread_id))) >>
-                                                (action, thread)
-                                            )) => { |actions| Command::VCont(actions) }
-                              )) => {
-                      |c| c
-                  }
-                  | preceded!(tag!("vKill;"), hex_value) => {
-                      |pid| Command::Kill(Some(pid))
-                  }
-                  // TODO: log the unknown command for debugging purposes.
-                  | preceded!(tag!("v"), take_till!(|_| { false })) => {
-                      |_| Command::UnknownVCommand
-                  })
+    tag!("vCtrlC") => { |_| Command::CtrlC }
+    | preceded!(tag!("vCont"),
+                alt_complete!(tag!("?") => { |_| Command::VContSupported }
+                              | many0!(do_parse!(
+                                  tag!(";") >>
+                                  action: alt_complete!(tag!("c") => { |_| VCont::Continue }
+                                                        | preceded!(tag!("C"), hex_byte) => { |sig| VCont::ContinueWithSignal(sig) }
+                                                        | tag!("s") => { |_| VCont::Step }
+                                                        | preceded!(tag!("S"), hex_byte) => { |sig| VCont::StepWithSignal(sig) }
+                                                        | tag!("t") => { |_| VCont::Stop }
+                                                        | do_parse!(tag!("r") >>
+                                                                    start: hex_value >>
+                                                                    tag!(",") >>
+                                                                    end: hex_value >>
+                                                                    (start, end)) => { |(start, end)| VCont::RangeStep(start..end) }
+                                  ) >>
+                                  thread: opt!(complete!(preceded!(tag!(":"), parse_thread_id))) >>
+                                  (action, thread)
+                              )) => { |actions| Command::VCont(actions) }
+                )) => {
+        |c| c
+    }
+    | preceded!(tag!("vKill;"), hex_value) => {
+        |pid| Command::Kill(Some(pid))
+    }
+    // TODO: log the unknown command for debugging purposes.
+    | preceded!(tag!("v"), take_till!(|_| { false })) => {
+        |_| Command::UnknownVCommand
+    })
 }
 
 /// Parse the H packet.
@@ -585,7 +609,7 @@ named!(parse_condition_list<&[u8], Vec<Bytecode>>,
                  list: many1!(parse_cond_or_command_expression) >>
                  (list)));
 
-fn maybe_condition_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
+fn maybe_condition_list<'a>(i: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
     // An Incomplete here really means "not enough input to match a
     // condition list", and that's OK.  An Error is *probably* that the
     // input contains a command list rather than a condition list; the
@@ -608,7 +632,7 @@ named!(parse_command_list<&[u8], Vec<Bytecode>>,
                                      many1!(parse_cond_or_command_expression)) >>
                  (list)));
 
-fn maybe_command_list<'a>(i: &'a[u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
+fn maybe_command_list<'a>(i: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
     // An Incomplete here really means "not enough input to match a
     // command list", and that's OK.
     match parse_command_list(i) {
@@ -625,25 +649,30 @@ named!(parse_cond_and_command_list<&[u8], (Option<Vec<Bytecode>>,
                  (cond_list, cmd_list)));
 
 fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    let (rest, (action, type_, addr, kind)) = try_parse!(i, do_parse!(
-                                                      action: parse_z_action >>
-                                                      type_: parse_z_type >>
-                                                      tag!(",") >>
-                                                      addr: hex_value >>
-                                                      tag!(",") >>
-                                                      kind: hex_value >>
-                                                      (action, type_, addr, kind)));
+    let (rest, (action, type_, addr, kind)) = try_parse!(
+        i,
+        do_parse!(
+            action: parse_z_action
+                >> type_: parse_z_type
+                >> tag!(",")
+                >> addr: hex_value
+                >> tag!(",")
+                >> kind: hex_value
+                >> (action, type_, addr, kind)
+        )
+    );
 
     return match action {
-        ZAction::Insert => {
-            insert_command(rest, type_, addr, kind)
-        },
-        ZAction::Remove => {
-            Done(rest, remove_command(type_, addr, kind))
-        }
+        ZAction::Insert => insert_command(rest, type_, addr, kind),
+        ZAction::Remove => Done(rest, remove_command(type_, addr, kind)),
     };
 
-    fn insert_command<'a>(rest: &'a [u8], type_: ZType, addr: u64, kind: u64) -> IResult<&'a [u8], Command<'a>> {
+    fn insert_command<'a>(
+        rest: &'a [u8],
+        type_: ZType,
+        addr: u64,
+        kind: u64,
+    ) -> IResult<&'a [u8], Command<'a>> {
         match type_ {
             // Software and hardware breakpoints both permit optional condition
             // lists and commands that are evaluated on the target when
@@ -657,17 +686,30 @@ fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
                     _ => panic!("cannot get here"),
                 })(Breakpoint::new(addr, kind, cond_list, cmd_list));
                 Done(rest, c)
-            },
-            ZType::WriteWatchpoint => Done(rest, Command::InsertWriteWatchpoint(Watchpoint::new(addr, kind))),
-            ZType::ReadWatchpoint => Done(rest, Command::InsertReadWatchpoint(Watchpoint::new(addr, kind))),
-            ZType::AccessWatchpoint => Done(rest, Command::InsertAccessWatchpoint(Watchpoint::new(addr, kind))),
+            }
+            ZType::WriteWatchpoint => Done(
+                rest,
+                Command::InsertWriteWatchpoint(Watchpoint::new(addr, kind)),
+            ),
+            ZType::ReadWatchpoint => Done(
+                rest,
+                Command::InsertReadWatchpoint(Watchpoint::new(addr, kind)),
+            ),
+            ZType::AccessWatchpoint => Done(
+                rest,
+                Command::InsertAccessWatchpoint(Watchpoint::new(addr, kind)),
+            ),
         }
     }
 
     fn remove_command<'a>(type_: ZType, addr: u64, kind: u64) -> Command<'a> {
         match type_ {
-            ZType::SoftwareBreakpoint => Command::RemoveSoftwareBreakpoint(Breakpoint::new(addr, kind, None, None)),
-            ZType::HardwareBreakpoint => Command::RemoveHardwareBreakpoint(Breakpoint::new(addr, kind, None, None)),
+            ZType::SoftwareBreakpoint => {
+                Command::RemoveSoftwareBreakpoint(Breakpoint::new(addr, kind, None, None))
+            }
+            ZType::HardwareBreakpoint => {
+                Command::RemoveHardwareBreakpoint(Breakpoint::new(addr, kind, None, None))
+            }
             ZType::WriteWatchpoint => Command::RemoveWriteWatchpoint(Watchpoint::new(addr, kind)),
             ZType::ReadWatchpoint => Command::RemoveReadWatchpoint(Watchpoint::new(addr, kind)),
             ZType::AccessWatchpoint => Command::RemoveAccessWatchpoint(Watchpoint::new(addr, kind)),
@@ -770,7 +812,7 @@ pub trait Handler {
     /// features that are always handled by the protocol
     /// implementation.
     fn query_supported_features(&self) -> Vec<String> {
-        vec!()
+        vec![]
     }
 
     /// Indicate whether the process in question already existed, and
@@ -853,8 +895,12 @@ pub trait Handler {
     /// ends after length bytes have been searched.  If the provided
     /// bytes are not seen, `None` should be returned; otherwise, the
     /// address at which the bytes were found should be returned.
-    fn search_memory(&self, _address: u64, _length: u64, _bytes: &[u8])
-                     -> Result<Option<u64>, Error> {
+    fn search_memory(
+        &self,
+        _address: u64,
+        _length: u64,
+        _bytes: &[u8],
+    ) -> Result<Option<u64>, Error> {
         Err(Error::Unimplemented)
     }
 
@@ -987,7 +1033,8 @@ enum Response<'a> {
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
-    where Response<'a>: From<T>
+where
+    Response<'a>: From<T>,
 {
     fn from(result: Result<T, Error>) -> Self {
         match result {
@@ -998,22 +1045,19 @@ impl<'a, T> From<Result<T, Error>> for Response<'a>
     }
 }
 
-impl<'a> From<()> for Response<'a>
-{
+impl<'a> From<()> for Response<'a> {
     fn from(_: ()) -> Self {
         Response::Ok
     }
 }
 
-impl<'a> From<Vec<u8>> for Response<'a>
-{
+impl<'a> From<Vec<u8>> for Response<'a> {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
     }
 }
 
-impl<'a> From<Option<ThreadId>> for Response<'a>
-{
+impl<'a> From<Option<ThreadId>> for Response<'a> {
     fn from(response: Option<ThreadId>) -> Self {
         Response::CurrentThread(response)
     }
@@ -1021,36 +1065,31 @@ impl<'a> From<Option<ThreadId>> for Response<'a>
 
 // This seems a bit specific -- what if some other handler method
 // wants to return an Option<u64>?
-impl<'a> From<Option<u64>> for Response<'a>
-{
+impl<'a> From<Option<u64>> for Response<'a> {
     fn from(response: Option<u64>) -> Self {
         Response::SearchResult(response)
     }
 }
 
-impl<'a> From<ProcessType> for Response<'a>
-{
+impl<'a> From<ProcessType> for Response<'a> {
     fn from(process_type: ProcessType) -> Self {
         Response::ProcessType(process_type)
     }
 }
 
-impl<'a> From<StopReason> for Response<'a>
-{
+impl<'a> From<StopReason> for Response<'a> {
     fn from(reason: StopReason) -> Self {
         Response::Stopped(reason)
     }
 }
 
-impl<'a> From<String> for Response<'a>
-{
+impl<'a> From<String> for Response<'a> {
     fn from(reason: String) -> Self {
         Response::String(Cow::Owned(reason) as Cow<str>)
     }
 }
 
-impl<'a> From<Cow<'static, [VContFeature]>> for Response<'a>
-{
+impl<'a> From<Cow<'static, [VContFeature]>> for Response<'a> {
     fn from(features: Cow<'static, [VContFeature]>) -> Self {
         Response::VContFeatures(features)
     }
@@ -1058,15 +1097,17 @@ impl<'a> From<Cow<'static, [VContFeature]>> for Response<'a>
 
 // A writer which sends a single packet.
 struct PacketWriter<'a, W>
-    where W: Write,
-          W: 'a
+where
+    W: Write,
+    W: 'a,
 {
     writer: &'a mut W,
     checksum: u8,
 }
 
 impl<'a, W> PacketWriter<'a, W>
-    where W: Write
+where
+    W: Write,
 {
     fn new(writer: &'a mut W) -> PacketWriter<'a, W> {
         PacketWriter {
@@ -1084,7 +1125,8 @@ impl<'a, W> PacketWriter<'a, W>
 }
 
 impl<'a, W> Write for PacketWriter<'a, W>
-    where W: Write
+where
+    W: Write,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let count = self.writer.write(buf)?;
@@ -1098,7 +1140,8 @@ impl<'a, W> Write for PacketWriter<'a, W>
 }
 
 fn write_thread_id<W>(writer: &mut W, thread_id: ThreadId) -> io::Result<()>
-    where W: Write
+where
+    W: Write,
 {
     write!(writer, "p")?;
     match thread_id.pid {
@@ -1115,7 +1158,8 @@ fn write_thread_id<W>(writer: &mut W, thread_id: ThreadId) -> io::Result<()>
 }
 
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
-    where W: Write,
+where
+    W: Write,
 {
     trace!("Response: {:?}", response);
     write!(writer, "$")?;
@@ -1125,8 +1169,7 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
         Response::Ok => {
             write!(writer, "OK")?;
         }
-        Response::Empty => {
-        }
+        Response::Empty => {}
         Response::Error(val) => {
             write!(writer, "E{:02x}", val)?;
         }
@@ -1160,12 +1203,10 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                 ProcessType::Created => write!(writer, "0")?,
             };
         }
-        Response::SearchResult(maybe_addr) => {
-            match maybe_addr {
-                Some(addr) => write!(writer, "1,{:x}", addr)?,
-                None => write!(writer, "0")?,
-            }
-        }
+        Response::SearchResult(maybe_addr) => match maybe_addr {
+            Some(addr) => write!(writer, "1,{:x}", addr)?,
+            None => write!(writer, "0")?,
+        },
         Response::Stopped(stop_reason) => {
             match stop_reason {
                 StopReason::Signal(signo) => write!(writer, "S{:02x}", signo)?,
@@ -1173,16 +1214,16 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
                     // Non-multi-process gdb only accepts 2 hex digits
                     // for the status.
                     write!(writer, "W{:02x};process:{:x}", status, pid)?;
-                },
+                }
                 StopReason::ExitedWithSignal(pid, status) => {
                     // Non-multi-process gdb only accepts 2 hex digits
                     // for the status.
                     write!(writer, "X{:x};process:{:x}", status, pid)?;
-                },
+                }
                 StopReason::ThreadExited(thread_id, status) => {
                     write!(writer, "w{:x};", status)?;
                     write_thread_id(&mut writer, thread_id)?;
-                },
+                }
                 StopReason::NoMoreThreads => write!(writer, "N")?,
             }
         }
@@ -1197,27 +1238,32 @@ fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
     writer.finish()
 }
 
-fn handle_supported_features<'a, H>(handler: &H, _features: &Vec<GDBFeatureSupported<'a>>) -> Response<'static>
-    where H: Handler,
+fn handle_supported_features<'a, H>(
+    handler: &H,
+    _features: &Vec<GDBFeatureSupported<'a>>,
+) -> Response<'static>
+where
+    H: Handler,
 {
-    let mut features = vec!("PacketSize=65536".to_string(),
-                            "QStartNoAckMode+".to_string(),
-                            "multiprocess+".to_string(),
-                            "QDisableRandomization+".to_string(),
-                            "QCatchSyscalls+".to_string(),
-                            "QPassSignals+".to_string(),
-                            "QProgramSignals+".to_string());
+    let mut features = vec![
+        "PacketSize=65536".to_string(),
+        "QStartNoAckMode+".to_string(),
+        "multiprocess+".to_string(),
+        "QDisableRandomization+".to_string(),
+        "QCatchSyscalls+".to_string(),
+        "QPassSignals+".to_string(),
+        "QProgramSignals+".to_string(),
+    ];
     let mut new_features = handler.query_supported_features();
     features.append(&mut new_features);
     Response::String(Cow::Owned(features.join(";")) as Cow<str>)
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
-fn handle_packet<H, W>(data: &[u8],
-                       handler: &H,
-                       writer: &mut W) -> io::Result<bool>
-    where H: Handler,
-          W: Write,
+fn handle_packet<H, W>(data: &[u8], handler: &H, writer: &mut W) -> io::Result<bool>
+where
+    H: Handler,
+    W: Write,
 {
     debug!("Command: {}", String::from_utf8_lossy(data));
     let mut no_ack_mode = false;
@@ -1225,34 +1271,24 @@ fn handle_packet<H, W>(data: &[u8],
         match command {
             // We unconditionally support extended mode.
             Command::EnableExtendedMode => Response::Ok,
-            Command::TargetHaltReason => {
-                handler.halt_reason().into()
-            },
-            Command::ReadGeneralRegisters => {
-                handler.read_general_registers().into()
-            },
+            Command::TargetHaltReason => handler.halt_reason().into(),
+            Command::ReadGeneralRegisters => handler.read_general_registers().into(),
             Command::WriteGeneralRegisters(bytes) => {
                 handler.write_general_registers(&bytes[..]).into()
-            },
+            }
             Command::Kill(None) => {
                 // The k packet requires no response, so purposely
                 // ignore the result.
                 drop(handler.kill(None));
                 Response::Empty
-            },
-            Command::Kill(pid) => {
-                handler.kill(pid).into()
-            },
+            }
+            Command::Kill(pid) => handler.kill(pid).into(),
             Command::Reset => Response::Empty,
-            Command::ReadRegister(regno) => {
-                handler.read_register(regno).into()
-            },
+            Command::ReadRegister(regno) => handler.read_register(regno).into(),
             Command::WriteRegister(regno, bytes) => {
                 handler.write_register(regno, &bytes[..]).into()
-            },
-            Command::ReadMemory(region) => {
-                handler.read_memory(region).into()
-            },
+            }
+            Command::ReadMemory(region) => handler.read_memory(region).into(),
             Command::WriteMemory(region, bytes) => {
                 // The docs don't really say what to do if the given
                 // length disagrees with the number of bytes sent, so
@@ -1262,38 +1298,31 @@ fn handle_packet<H, W>(data: &[u8],
                 } else {
                     handler.write_memory(region.address, &bytes[..]).into()
                 }
-            },
-            Command::SetCurrentThread(thread_id) => {
-                handler.set_current_thread(thread_id).into()
-            },
-            Command::Detach(pid) => {
-                handler.detach(pid).into()
-            },
+            }
+            Command::SetCurrentThread(thread_id) => handler.set_current_thread(thread_id).into(),
+            Command::Detach(pid) => handler.detach(pid).into(),
 
-            Command::Query(Query::Attached(pid)) => {
-                handler.attached(pid).into()
-            },
-            Command::Query(Query::CurrentThread) => {
-                handler.current_thread().into()
-            },
-            Command::Query(Query::Invoke(cmd)) => {
-                match handler.invoke(&cmd[..]) {
-                    Result::Ok(val) => {
-                        if val.len() == 0 {
-                            Response::Ok
-                        } else {
-                            Response::Output(val)
-                        }
-                    },
-                    Result::Err(Error::Error(val)) => Response::Error(val),
-                    Result::Err(Error::Unimplemented) => Response::Empty,
+            Command::Query(Query::Attached(pid)) => handler.attached(pid).into(),
+            Command::Query(Query::CurrentThread) => handler.current_thread().into(),
+            Command::Query(Query::Invoke(cmd)) => match handler.invoke(&cmd[..]) {
+                Result::Ok(val) => {
+                    if val.len() == 0 {
+                        Response::Ok
+                    } else {
+                        Response::Output(val)
+                    }
                 }
+                Result::Err(Error::Error(val)) => Response::Error(val),
+                Result::Err(Error::Unimplemented) => Response::Empty,
             },
-            Command::Query(Query::SearchMemory { address, length, bytes }) => {
-                handler.search_memory(address, length, &bytes[..]).into()
-            },
-            Command::Query(Query::SupportedFeatures(features)) =>
-                handle_supported_features(handler, &features),
+            Command::Query(Query::SearchMemory {
+                address,
+                length,
+                bytes,
+            }) => handler.search_memory(address, length, &bytes[..]).into(),
+            Command::Query(Query::SupportedFeatures(features)) => {
+                handle_supported_features(handler, &features)
+            }
             Command::Query(Query::StartNoAckMode) => {
                 no_ack_mode = true;
                 Response::Ok
@@ -1301,12 +1330,8 @@ fn handle_packet<H, W>(data: &[u8],
             Command::Query(Query::AddressRandomization(randomize)) => {
                 handler.set_address_randomization(randomize).into()
             }
-            Command::Query(Query::CatchSyscalls(calls)) => {
-                handler.catch_syscalls(calls).into()
-            }
-            Command::Query(Query::PassSignals(signals)) => {
-                handler.set_pass_signals(signals).into()
-            }
+            Command::Query(Query::CatchSyscalls(calls)) => handler.catch_syscalls(calls).into(),
+            Command::Query(Query::PassSignals(signals)) => handler.set_pass_signals(signals).into(),
             Command::Query(Query::ProgramSignals(signals)) => {
                 handler.set_program_signals(signals).into()
             }
@@ -1322,44 +1347,22 @@ fn handle_packet<H, W>(data: &[u8],
             // response.
             Command::UnknownVCommand => Response::Empty,
 
-            Command::InsertSoftwareBreakpoint(bp) => {
-                handler.insert_software_breakpoint(bp).into()
-            }
-            Command::InsertHardwareBreakpoint(bp) => {
-                handler.insert_hardware_breakpoint(bp).into()
-            }
-            Command::InsertWriteWatchpoint(wp) => {
-                handler.insert_write_watchpoint(wp).into()
-            }
-            Command::InsertReadWatchpoint(wp) => {
-                handler.insert_read_watchpoint(wp).into()
-            }
-            Command::InsertAccessWatchpoint(wp) => {
-                handler.insert_access_watchpoint(wp).into()
-            }
-            Command::RemoveSoftwareBreakpoint(bp) => {
-                handler.remove_software_breakpoint(bp).into()
-            }
-            Command::RemoveHardwareBreakpoint(bp) => {
-                handler.remove_hardware_breakpoint(bp).into()
-            }
-            Command::RemoveWriteWatchpoint(wp) => {
-                handler.remove_write_watchpoint(wp).into()
-            }
-            Command::RemoveReadWatchpoint(wp) => {
-                handler.remove_read_watchpoint(wp).into()
-            }
-            Command::RemoveAccessWatchpoint(wp) => {
-                handler.remove_access_watchpoint(wp).into()
-            }
-            Command::VContSupported => {
-                handler.query_supported_vcont().into()
-            }
-            Command::VCont(list) => {
-                handler.vcont(list).into()
-            }
+            Command::InsertSoftwareBreakpoint(bp) => handler.insert_software_breakpoint(bp).into(),
+            Command::InsertHardwareBreakpoint(bp) => handler.insert_hardware_breakpoint(bp).into(),
+            Command::InsertWriteWatchpoint(wp) => handler.insert_write_watchpoint(wp).into(),
+            Command::InsertReadWatchpoint(wp) => handler.insert_read_watchpoint(wp).into(),
+            Command::InsertAccessWatchpoint(wp) => handler.insert_access_watchpoint(wp).into(),
+            Command::RemoveSoftwareBreakpoint(bp) => handler.remove_software_breakpoint(bp).into(),
+            Command::RemoveHardwareBreakpoint(bp) => handler.remove_hardware_breakpoint(bp).into(),
+            Command::RemoveWriteWatchpoint(wp) => handler.remove_write_watchpoint(wp).into(),
+            Command::RemoveReadWatchpoint(wp) => handler.remove_read_watchpoint(wp).into(),
+            Command::RemoveAccessWatchpoint(wp) => handler.remove_access_watchpoint(wp).into(),
+            Command::VContSupported => handler.query_supported_vcont().into(),
+            Command::VCont(list) => handler.vcont(list).into(),
         }
-    } else { Response::Empty };
+    } else {
+        Response::Empty
+    };
     write_response(response, writer)?;
     Ok(no_ack_mode)
 }
@@ -1381,12 +1384,11 @@ fn run_parser(buf: &[u8]) -> Option<(usize, Packet)> {
 
 /// Read gdbserver packets from `reader` and call methods on `handler` to handle them and write
 /// responses to `writer`.
-pub fn process_packets_from<R, W, H>(reader: R,
-                                     mut writer: W,
-                                     handler: H)
-    where R: Read,
-          W: Write,
-          H: Handler
+pub fn process_packets_from<R, W, H>(reader: R, mut writer: W, handler: H)
+where
+    R: Read,
+    W: Write,
+    H: Handler,
 {
     let mut bufreader = BufReader::with_capacity(MAX_PACKET_SIZE, reader);
     let mut done = false;
@@ -1404,13 +1406,14 @@ pub fn process_packets_from<R, W, H>(reader: R,
                             //TODO: propagate errors to caller?
                             return;
                         }
-                        let no_ack_mode = handle_packet(&data, &handler, &mut writer).unwrap_or(false);
+                        let no_ack_mode =
+                            handle_packet(&data, &handler, &mut writer).unwrap_or(false);
                         if no_ack_mode {
                             ack_mode = false;
                         }
-                    },
+                    }
                     // Just ignore ACK/NACK/Interrupt
-                    _ => {},
+                    _ => {}
                 };
                 len
             } else {
@@ -1428,9 +1431,13 @@ pub fn process_packets_from<R, W, H>(reader: R,
 #[test]
 fn test_compute_checksum() {
     assert_eq!(compute_checksum_incremental(&b""[..], 0), 0);
-    assert_eq!(compute_checksum_incremental(&b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..],
-                                0),
-               0xb5);
+    assert_eq!(
+        compute_checksum_incremental(
+            &b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..],
+            0
+        ),
+        0xb5
+    );
 }
 
 #[test]
@@ -1445,13 +1452,28 @@ fn test_checksum() {
 fn test_packet() {
     use nom::Needed;
     assert_eq!(packet(&b"$#00"[..]), Done(&b""[..], (b""[..].to_vec(), 0)));
-    assert_eq!(packet(&b"$xyz#00"[..]), Done(&b""[..], (b"xyz"[..].to_vec(), 0)));
-    assert_eq!(packet(&b"$a#a1"[..]), Done(&b""[..], (b"a"[..].to_vec(), 0xa1)));
-    assert_eq!(packet(&b"$foo#ffxyz"[..]), Done(&b"xyz"[..], (b"foo"[..].to_vec(), 0xff)));
-    assert_eq!(packet(&b"$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5"[..]),
-               Done(&b""[..],
-                    (b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..].to_vec(),
-                     0xb5)));
+    assert_eq!(
+        packet(&b"$xyz#00"[..]),
+        Done(&b""[..], (b"xyz"[..].to_vec(), 0))
+    );
+    assert_eq!(
+        packet(&b"$a#a1"[..]),
+        Done(&b""[..], (b"a"[..].to_vec(), 0xa1))
+    );
+    assert_eq!(
+        packet(&b"$foo#ffxyz"[..]),
+        Done(&b"xyz"[..], (b"foo"[..].to_vec(), 0xff))
+    );
+    assert_eq!(
+        packet(&b"$qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+#b5"[..]),
+        Done(
+            &b""[..],
+            (
+                b"qSupported:multiprocess+;xmlRegisters=i386;qRelocInsn+"[..].to_vec(),
+                0xb5
+            )
+        )
+    );
     assert_eq!(packet(&b"$"[..]), Incomplete(Needed::Size(2)));
     assert_eq!(packet(&b"$#"[..]), Incomplete(Needed::Size(4)));
     assert_eq!(packet(&b"$xyz"[..]), Incomplete(Needed::Size(5)));
@@ -1461,69 +1483,119 @@ fn test_packet() {
 
 #[test]
 fn test_packet_or_response() {
-    assert_eq!(packet_or_response(&b"$#00"[..]), Done(&b""[..], Packet::Data(b""[..].to_vec(), 0)));
+    assert_eq!(
+        packet_or_response(&b"$#00"[..]),
+        Done(&b""[..], Packet::Data(b""[..].to_vec(), 0))
+    );
     assert_eq!(packet_or_response(&b"+"[..]), Done(&b""[..], Packet::Ack));
     assert_eq!(packet_or_response(&b"-"[..]), Done(&b""[..], Packet::Nack));
 }
 
 #[test]
 fn test_gdbfeaturesupported() {
-    assert_eq!(gdbfeaturesupported(&b"multiprocess+"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::Yes(GDBFeature::multiprocess),
-                                                  FeatureSupported::Yes)));
-    assert_eq!(gdbfeaturesupported(&b"xmlRegisters=i386"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::Yes(GDBFeature::xmlRegisters),
-                                                  FeatureSupported::Value("i386"))));
-    assert_eq!(gdbfeaturesupported(&b"qRelocInsn-"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::Yes(GDBFeature::qRelocInsn),
-                                                  FeatureSupported::No)));
-    assert_eq!(gdbfeaturesupported(&b"vfork-events+"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::Yes(GDBFeature::vfork_events),
-                                                  FeatureSupported::Yes)));
-    assert_eq!(gdbfeaturesupported(&b"vfork-events-"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::Yes(GDBFeature::vfork_events),
-                                                  FeatureSupported::No)));
-    assert_eq!(gdbfeaturesupported(&b"unknown-feature+"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::No("unknown-feature"),
-                                                  FeatureSupported::Yes)));
-    assert_eq!(gdbfeaturesupported(&b"unknown-feature-"[..]),
-               Done(&b""[..], GDBFeatureSupported(Known::No("unknown-feature"),
-                                                  FeatureSupported::No)));
+    assert_eq!(
+        gdbfeaturesupported(&b"multiprocess+"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(Known::Yes(GDBFeature::multiprocess), FeatureSupported::Yes)
+        )
+    );
+    assert_eq!(
+        gdbfeaturesupported(&b"xmlRegisters=i386"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(
+                Known::Yes(GDBFeature::xmlRegisters),
+                FeatureSupported::Value("i386")
+            )
+        )
+    );
+    assert_eq!(
+        gdbfeaturesupported(&b"qRelocInsn-"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(Known::Yes(GDBFeature::qRelocInsn), FeatureSupported::No)
+        )
+    );
+    assert_eq!(
+        gdbfeaturesupported(&b"vfork-events+"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(Known::Yes(GDBFeature::vfork_events), FeatureSupported::Yes)
+        )
+    );
+    assert_eq!(
+        gdbfeaturesupported(&b"vfork-events-"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(Known::Yes(GDBFeature::vfork_events), FeatureSupported::No)
+        )
+    );
+    assert_eq!(
+        gdbfeaturesupported(&b"unknown-feature+"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(Known::No("unknown-feature"), FeatureSupported::Yes)
+        )
+    );
+    assert_eq!(
+        gdbfeaturesupported(&b"unknown-feature-"[..]),
+        Done(
+            &b""[..],
+            GDBFeatureSupported(Known::No("unknown-feature"), FeatureSupported::No)
+        )
+    );
 }
 
 #[test]
 fn test_gdbfeature() {
-    assert_eq!(gdbfeature(&b"multiprocess"[..]),
-               Done(&b""[..], Known::Yes(GDBFeature::multiprocess)));
-    assert_eq!(gdbfeature(&b"fork-events"[..]),
-               Done(&b""[..], Known::Yes(GDBFeature::fork_events)));
-    assert_eq!(gdbfeature(&b"some-unknown-feature"[..]),
-               Done(&b""[..], Known::No("some-unknown-feature")));
+    assert_eq!(
+        gdbfeature(&b"multiprocess"[..]),
+        Done(&b""[..], Known::Yes(GDBFeature::multiprocess))
+    );
+    assert_eq!(
+        gdbfeature(&b"fork-events"[..]),
+        Done(&b""[..], Known::Yes(GDBFeature::fork_events))
+    );
+    assert_eq!(
+        gdbfeature(&b"some-unknown-feature"[..]),
+        Done(&b""[..], Known::No("some-unknown-feature"))
+    );
 }
 
 #[test]
 fn test_query() {
     // From a gdbserve packet capture.
-    let b = concat!("qSupported:multiprocess+;swbreak+;hwbreak+;qRelocInsn+;fork-events+;",
-                    "vfork-events+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;",
-                    "xmlRegisters=i386");
-    assert_eq!(query(b.as_bytes()),
-               Done(&b""[..], Query::SupportedFeatures(vec![
-                   GDBFeatureSupported(Known::Yes(GDBFeature::multiprocess), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::swbreak), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::hwbreak), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::qRelocInsn), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::fork_events), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::vfork_events), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::exec_events), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::vContSupported),
-                                       FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::QThreadEvents),
-                                       FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::no_resumed), FeatureSupported::Yes),
-                   GDBFeatureSupported(Known::Yes(GDBFeature::xmlRegisters),
-                                       FeatureSupported::Value("i386")),
-                   ])));
+    let b = concat!(
+        "qSupported:multiprocess+;swbreak+;hwbreak+;qRelocInsn+;fork-events+;",
+        "vfork-events+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;",
+        "xmlRegisters=i386"
+    );
+    assert_eq!(
+        query(b.as_bytes()),
+        Done(
+            &b""[..],
+            Query::SupportedFeatures(vec![
+                GDBFeatureSupported(Known::Yes(GDBFeature::multiprocess), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::swbreak), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::hwbreak), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::qRelocInsn), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::fork_events), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::vfork_events), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::exec_events), FeatureSupported::Yes),
+                GDBFeatureSupported(
+                    Known::Yes(GDBFeature::vContSupported),
+                    FeatureSupported::Yes
+                ),
+                GDBFeatureSupported(Known::Yes(GDBFeature::QThreadEvents), FeatureSupported::Yes),
+                GDBFeatureSupported(Known::Yes(GDBFeature::no_resumed), FeatureSupported::Yes),
+                GDBFeatureSupported(
+                    Known::Yes(GDBFeature::xmlRegisters),
+                    FeatureSupported::Value("i386")
+                ),
+            ])
+        )
+    );
 }
 
 #[test]
@@ -1539,134 +1611,267 @@ fn test_hex_value() {
 fn test_parse_thread_id_element() {
     assert_eq!(parse_thread_id_element(&b"0"[..]), Done(&b""[..], Id::Any));
     assert_eq!(parse_thread_id_element(&b"-1"[..]), Done(&b""[..], Id::All));
-    assert_eq!(parse_thread_id_element(&b"23"[..]), Done(&b""[..], Id::Id(0x23)));
+    assert_eq!(
+        parse_thread_id_element(&b"23"[..]),
+        Done(&b""[..], Id::Id(0x23))
+    );
 }
 
 #[test]
 fn test_parse_thread_id() {
-    assert_eq!(parse_thread_id(&b"0"[..]),
-               Done(&b""[..], ThreadId{pid: Id::Any, tid: Id::Any}));
-    assert_eq!(parse_thread_id(&b"-1"[..]),
-               Done(&b""[..], ThreadId{pid: Id::All, tid: Id::Any}));
-    assert_eq!(parse_thread_id(&b"23"[..]),
-               Done(&b""[..], ThreadId{pid: Id::Id(0x23), tid: Id::Any}));
+    assert_eq!(
+        parse_thread_id(&b"0"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::Any,
+                tid: Id::Any
+            }
+        )
+    );
+    assert_eq!(
+        parse_thread_id(&b"-1"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::All,
+                tid: Id::Any
+            }
+        )
+    );
+    assert_eq!(
+        parse_thread_id(&b"23"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::Id(0x23),
+                tid: Id::Any
+            }
+        )
+    );
 
-    assert_eq!(parse_thread_id(&b"p23"[..]),
-               Done(&b""[..], ThreadId{pid: Id::Id(0x23), tid: Id::All}));
+    assert_eq!(
+        parse_thread_id(&b"p23"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::Id(0x23),
+                tid: Id::All
+            }
+        )
+    );
 
-    assert_eq!(parse_thread_id(&b"p0.0"[..]),
-               Done(&b""[..], ThreadId{pid: Id::Any, tid: Id::Any}));
-    assert_eq!(parse_thread_id(&b"p-1.23"[..]),
-               Done(&b""[..], ThreadId{pid: Id::All, tid: Id::Id(0x23)}));
-    assert_eq!(parse_thread_id(&b"pff.23"[..]),
-               Done(&b""[..], ThreadId{pid: Id::Id(0xff), tid: Id::Id(0x23)}));
+    assert_eq!(
+        parse_thread_id(&b"p0.0"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::Any,
+                tid: Id::Any
+            }
+        )
+    );
+    assert_eq!(
+        parse_thread_id(&b"p-1.23"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::All,
+                tid: Id::Id(0x23)
+            }
+        )
+    );
+    assert_eq!(
+        parse_thread_id(&b"pff.23"[..]),
+        Done(
+            &b""[..],
+            ThreadId {
+                pid: Id::Id(0xff),
+                tid: Id::Id(0x23)
+            }
+        )
+    );
 }
 
 #[test]
 fn test_parse_v_commands() {
-    assert_eq!(v_command(&b"vKill;33"[..]),
-               Done(&b""[..], Command::Kill(Some(0x33))));
-    assert_eq!(v_command(&b"vCtrlC"[..]),
-               Done(&b""[..], Command::CtrlC));
-    assert_eq!(v_command(&b"vMustReplyEmpty"[..]),
-               Done(&b""[..], Command::UnknownVCommand));
-    assert_eq!(v_command(&b"vFile:close:0"[..]),
-               Done(&b""[..], Command::UnknownVCommand));
+    assert_eq!(
+        v_command(&b"vKill;33"[..]),
+        Done(&b""[..], Command::Kill(Some(0x33)))
+    );
+    assert_eq!(v_command(&b"vCtrlC"[..]), Done(&b""[..], Command::CtrlC));
+    assert_eq!(
+        v_command(&b"vMustReplyEmpty"[..]),
+        Done(&b""[..], Command::UnknownVCommand)
+    );
+    assert_eq!(
+        v_command(&b"vFile:close:0"[..]),
+        Done(&b""[..], Command::UnknownVCommand)
+    );
 
-    assert_eq!(v_command(&b"vCont?"[..]),
-               Done(&b""[..], Command::VContSupported));
-    assert_eq!(v_command(&b"vCont"[..]),
-               Done(&b""[..], Command::VCont(Vec::new())));
-    assert_eq!(v_command(&b"vCont;c"[..]),
-               Done(&b""[..], Command::VCont(vec![(VCont::Continue, None)])));
-    assert_eq!(v_command(&b"vCont;r1,2:p34.56;SAD:-1;c"[..]),
-               Done(&b""[..], Command::VCont(vec![(VCont::RangeStep(1..2), Some(ThreadId{pid: Id::Id(0x34), tid: Id::Id(0x56)})),
-                                                  (VCont::StepWithSignal(0xAD), Some(ThreadId{pid: Id::All, tid: Id::Any})),
-                                                  (VCont::Continue, None)])));
+    assert_eq!(
+        v_command(&b"vCont?"[..]),
+        Done(&b""[..], Command::VContSupported)
+    );
+    assert_eq!(
+        v_command(&b"vCont"[..]),
+        Done(&b""[..], Command::VCont(Vec::new()))
+    );
+    assert_eq!(
+        v_command(&b"vCont;c"[..]),
+        Done(&b""[..], Command::VCont(vec![(VCont::Continue, None)]))
+    );
+    assert_eq!(
+        v_command(&b"vCont;r1,2:p34.56;SAD:-1;c"[..]),
+        Done(
+            &b""[..],
+            Command::VCont(vec![
+                (
+                    VCont::RangeStep(1..2),
+                    Some(ThreadId {
+                        pid: Id::Id(0x34),
+                        tid: Id::Id(0x56)
+                    })
+                ),
+                (
+                    VCont::StepWithSignal(0xAD),
+                    Some(ThreadId {
+                        pid: Id::All,
+                        tid: Id::Any
+                    })
+                ),
+                (VCont::Continue, None)
+            ])
+        )
+    );
 }
 
 #[test]
 fn test_parse_d_packets() {
-    assert_eq!(parse_d_packet(&b"D"[..]),
-               Done(&b""[..], None));
-    assert_eq!(parse_d_packet(&b"D;f0"[..]),
-               Done(&b""[..], Some(240)));
+    assert_eq!(parse_d_packet(&b"D"[..]), Done(&b""[..], None));
+    assert_eq!(parse_d_packet(&b"D;f0"[..]), Done(&b""[..], Some(240)));
 }
 
 #[test]
 fn test_parse_write_memory() {
-    assert_eq!(write_memory(&b"Mf0,3:ff0102"[..]),
-               Done(&b""[..], (240, 3, vec!(255, 1, 2))));
+    assert_eq!(
+        write_memory(&b"Mf0,3:ff0102"[..]),
+        Done(&b""[..], (240, 3, vec!(255, 1, 2)))
+    );
 }
 
 #[test]
 fn test_parse_write_memory_binary() {
-    assert_eq!(write_memory_binary(&b"Xf0,1: "[..]),
-               Done(&b""[..], (240, 1, vec!(0x20))));
-    assert_eq!(write_memory_binary(&b"X90,10:}\x5d"[..]),
-               Done(&b""[..], (144, 16, vec!(0x7d))));
-    assert_eq!(write_memory_binary(&b"X5,100:}\x5d}\x03"[..]),
-               Done(&b""[..], (5, 256, vec!(0x7d, 0x23))));
-    assert_eq!(write_memory_binary(&b"Xff,2:}\x04\x9a"[..]),
-               Done(&b""[..], (255, 2, vec!(0x24, 0x9a))));
-    assert_eq!(write_memory_binary(&b"Xff,2:\xce}\x0a\x9a"[..]),
-               Done(&b""[..], (255, 2, vec!(0xce, 0x2a, 0x9a))));
+    assert_eq!(
+        write_memory_binary(&b"Xf0,1: "[..]),
+        Done(&b""[..], (240, 1, vec!(0x20)))
+    );
+    assert_eq!(
+        write_memory_binary(&b"X90,10:}\x5d"[..]),
+        Done(&b""[..], (144, 16, vec!(0x7d)))
+    );
+    assert_eq!(
+        write_memory_binary(&b"X5,100:}\x5d}\x03"[..]),
+        Done(&b""[..], (5, 256, vec!(0x7d, 0x23)))
+    );
+    assert_eq!(
+        write_memory_binary(&b"Xff,2:}\x04\x9a"[..]),
+        Done(&b""[..], (255, 2, vec!(0x24, 0x9a)))
+    );
+    assert_eq!(
+        write_memory_binary(&b"Xff,2:\xce}\x0a\x9a"[..]),
+        Done(&b""[..], (255, 2, vec!(0xce, 0x2a, 0x9a)))
+    );
 }
 
 #[test]
 fn test_parse_qrcmd() {
-    assert_eq!(query(&b"qRcmd,736f6d657468696e67"[..]),
-               Done(&b""[..], Query::Invoke(b"something".to_vec())));
+    assert_eq!(
+        query(&b"qRcmd,736f6d657468696e67"[..]),
+        Done(&b""[..], Query::Invoke(b"something".to_vec()))
+    );
 }
 
 #[test]
 fn test_parse_randomization() {
-    assert_eq!(query(&b"QDisableRandomization:0"[..]),
-               Done(&b""[..], Query::AddressRandomization(true)));
-    assert_eq!(query(&b"QDisableRandomization:1"[..]),
-               Done(&b""[..], Query::AddressRandomization(false)));
+    assert_eq!(
+        query(&b"QDisableRandomization:0"[..]),
+        Done(&b""[..], Query::AddressRandomization(true))
+    );
+    assert_eq!(
+        query(&b"QDisableRandomization:1"[..]),
+        Done(&b""[..], Query::AddressRandomization(false))
+    );
 }
 
 #[test]
 fn test_parse_syscalls() {
-    assert_eq!(query(&b"QCatchSyscalls:0"[..]),
-               Done(&b""[..], Query::CatchSyscalls(None)));
-    assert_eq!(query(&b"QCatchSyscalls:1"[..]),
-               Done(&b""[..], Query::CatchSyscalls(Some(vec!()))));
-    assert_eq!(query(&b"QCatchSyscalls:1;0;1;ff"[..]),
-               Done(&b""[..], Query::CatchSyscalls(Some(vec!(0, 1, 255)))));
+    assert_eq!(
+        query(&b"QCatchSyscalls:0"[..]),
+        Done(&b""[..], Query::CatchSyscalls(None))
+    );
+    assert_eq!(
+        query(&b"QCatchSyscalls:1"[..]),
+        Done(&b""[..], Query::CatchSyscalls(Some(vec!())))
+    );
+    assert_eq!(
+        query(&b"QCatchSyscalls:1;0;1;ff"[..]),
+        Done(&b""[..], Query::CatchSyscalls(Some(vec!(0, 1, 255))))
+    );
 }
 
 #[test]
 fn test_parse_signals() {
-    assert_eq!(query(&b"QPassSignals:"[..]),
-               Done(&b""[..], Query::PassSignals(vec!())));
-    assert_eq!(query(&b"QPassSignals:0"[..]),
-               Done(&b""[..], Query::PassSignals(vec!(0))));
-    assert_eq!(query(&b"QPassSignals:1;2;ff"[..]),
-               Done(&b""[..], Query::PassSignals(vec!(1, 2, 255))));
-    assert_eq!(query(&b"QProgramSignals:0"[..]),
-               Done(&b""[..], Query::ProgramSignals(vec!(0))));
-    assert_eq!(query(&b"QProgramSignals:1;2;ff"[..]),
-               Done(&b""[..], Query::ProgramSignals(vec!(1, 2, 255))));
+    assert_eq!(
+        query(&b"QPassSignals:"[..]),
+        Done(&b""[..], Query::PassSignals(vec!()))
+    );
+    assert_eq!(
+        query(&b"QPassSignals:0"[..]),
+        Done(&b""[..], Query::PassSignals(vec!(0)))
+    );
+    assert_eq!(
+        query(&b"QPassSignals:1;2;ff"[..]),
+        Done(&b""[..], Query::PassSignals(vec!(1, 2, 255)))
+    );
+    assert_eq!(
+        query(&b"QProgramSignals:0"[..]),
+        Done(&b""[..], Query::ProgramSignals(vec!(0)))
+    );
+    assert_eq!(
+        query(&b"QProgramSignals:1;2;ff"[..]),
+        Done(&b""[..], Query::ProgramSignals(vec!(1, 2, 255)))
+    );
 }
 
 #[test]
 fn test_thread_info() {
-    assert_eq!(query(&b"qThreadExtraInfo,ffff"[..]),
-               Done(&b""[..], Query::ThreadInfo(ThreadId { pid: Id::Id(65535), tid: Id::Any })));
+    assert_eq!(
+        query(&b"qThreadExtraInfo,ffff"[..]),
+        Done(
+            &b""[..],
+            Query::ThreadInfo(ThreadId {
+                pid: Id::Id(65535),
+                tid: Id::Any
+            })
+        )
+    );
 }
 
 #[test]
 fn test_parse_write_register() {
-    assert_eq!(write_register(&b"Pff=1020"[..]),
-               Done(&b""[..], (255, vec!(16, 32))));
+    assert_eq!(
+        write_register(&b"Pff=1020"[..]),
+        Done(&b""[..], (255, vec!(16, 32)))
+    );
 }
 
 #[test]
 fn test_parse_write_general_registers() {
-    assert_eq!(write_general_registers(&b"G0001020304"[..]),
-               Done(&b""[..], vec!(0, 1, 2, 3, 4)));
+    assert_eq!(
+        write_general_registers(&b"G0001020304"[..]),
+        Done(&b""[..], vec!(0, 1, 2, 3, 4))
+    );
 }
 
 #[test]
@@ -1681,11 +1886,14 @@ fn test_write_response() {
     assert_eq!(write_one(Response::Ok).unwrap(), "$OK#9a");
     assert_eq!(write_one(Response::Error(1)).unwrap(), "$E01#a6");
 
-    assert_eq!(write_one(Response::CurrentThread(Some(ThreadId {
-        pid: Id::Id(255),
-        tid: Id::Id(1)
-    }))).unwrap(),
-               "$QCpff.1#2f");
+    assert_eq!(
+        write_one(Response::CurrentThread(Some(ThreadId {
+            pid: Id::Id(255),
+            tid: Id::Id(1)
+        })))
+        .unwrap(),
+        "$QCpff.1#2f"
+    );
 }
 
 #[cfg(test)]
@@ -1696,72 +1904,192 @@ macro_rules! bytecode {
 
 #[test]
 fn test_breakpoints() {
-    assert_eq!(parse_z_packet(&b"Z0,1ff,0"[..]),
-               Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 0, None, None))));
-    assert_eq!(parse_z_packet(&b"z0,1fff,0"[..]),
-               Done(&b""[..], Command::RemoveSoftwareBreakpoint(Breakpoint::new(0x1fff, 0, None, None))));
-    assert_eq!(parse_z_packet(&b"Z1,ae,0"[..]),
-               Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0xae, 0, None, None))));
-    assert_eq!(parse_z_packet(&b"z1,aec,0"[..]),
-               Done(&b""[..], Command::RemoveHardwareBreakpoint(Breakpoint::new(0xaec, 0, None, None))));
-    assert_eq!(parse_z_packet(&b"Z2,4cc,2"[..]),
-               Done(&b""[..], Command::InsertWriteWatchpoint(Watchpoint::new(0x4cc, 2))));
-    assert_eq!(parse_z_packet(&b"z2,4ccf,4"[..]),
-               Done(&b""[..], Command::RemoveWriteWatchpoint(Watchpoint::new(0x4ccf, 4))));
-    assert_eq!(parse_z_packet(&b"Z3,7777,4"[..]),
-               Done(&b""[..], Command::InsertReadWatchpoint(Watchpoint::new(0x7777, 4))));
-    assert_eq!(parse_z_packet(&b"z3,77778,8"[..]),
-               Done(&b""[..], Command::RemoveReadWatchpoint(Watchpoint::new(0x77778, 8))));
-    assert_eq!(parse_z_packet(&b"Z4,7777,10"[..]),
-               Done(&b""[..], Command::InsertAccessWatchpoint(Watchpoint::new(0x7777, 16))));
-    assert_eq!(parse_z_packet(&b"z4,77778,20"[..]),
-               Done(&b""[..], Command::RemoveAccessWatchpoint(Watchpoint::new(0x77778, 32))));
+    assert_eq!(
+        parse_z_packet(&b"Z0,1ff,0"[..]),
+        Done(
+            &b""[..],
+            Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 0, None, None))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"z0,1fff,0"[..]),
+        Done(
+            &b""[..],
+            Command::RemoveSoftwareBreakpoint(Breakpoint::new(0x1fff, 0, None, None))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z1,ae,0"[..]),
+        Done(
+            &b""[..],
+            Command::InsertHardwareBreakpoint(Breakpoint::new(0xae, 0, None, None))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"z1,aec,0"[..]),
+        Done(
+            &b""[..],
+            Command::RemoveHardwareBreakpoint(Breakpoint::new(0xaec, 0, None, None))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z2,4cc,2"[..]),
+        Done(
+            &b""[..],
+            Command::InsertWriteWatchpoint(Watchpoint::new(0x4cc, 2))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"z2,4ccf,4"[..]),
+        Done(
+            &b""[..],
+            Command::RemoveWriteWatchpoint(Watchpoint::new(0x4ccf, 4))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z3,7777,4"[..]),
+        Done(
+            &b""[..],
+            Command::InsertReadWatchpoint(Watchpoint::new(0x7777, 4))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"z3,77778,8"[..]),
+        Done(
+            &b""[..],
+            Command::RemoveReadWatchpoint(Watchpoint::new(0x77778, 8))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z4,7777,10"[..]),
+        Done(
+            &b""[..],
+            Command::InsertAccessWatchpoint(Watchpoint::new(0x7777, 16))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"z4,77778,20"[..]),
+        Done(
+            &b""[..],
+            Command::RemoveAccessWatchpoint(Watchpoint::new(0x77778, 32))
+        )
+    );
 
-    assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0"[..]),
-               Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(bytecode!('0' as u8))), None))));
-    assert_eq!(parse_z_packet(&b"Z1,1ff,2;X1,0"[..]),
-               Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(bytecode!('0' as u8))), None))));
+    assert_eq!(
+        parse_z_packet(&b"Z0,1ff,2;X1,0"[..]),
+        Done(
+            &b""[..],
+            Command::InsertSoftwareBreakpoint(Breakpoint::new(
+                0x1ff,
+                2,
+                Some(vec!(bytecode!('0' as u8))),
+                None
+            ))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z1,1ff,2;X1,0"[..]),
+        Done(
+            &b""[..],
+            Command::InsertHardwareBreakpoint(Breakpoint::new(
+                0x1ff,
+                2,
+                Some(vec!(bytecode!('0' as u8))),
+                None
+            ))
+        )
+    );
 
-    assert_eq!(parse_z_packet(&b"Z0,1ff,2;cmdsX1,z"[..]),
-               Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                None, Some(vec!(bytecode!('z' as u8)))))));
-    assert_eq!(parse_z_packet(&b"Z1,1ff,2;cmdsX1,z"[..]),
-               Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                None, Some(vec!(bytecode!('z' as u8)))))));
+    assert_eq!(
+        parse_z_packet(&b"Z0,1ff,2;cmdsX1,z"[..]),
+        Done(
+            &b""[..],
+            Command::InsertSoftwareBreakpoint(Breakpoint::new(
+                0x1ff,
+                2,
+                None,
+                Some(vec!(bytecode!('z' as u8)))
+            ))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z1,1ff,2;cmdsX1,z"[..]),
+        Done(
+            &b""[..],
+            Command::InsertHardwareBreakpoint(Breakpoint::new(
+                0x1ff,
+                2,
+                None,
+                Some(vec!(bytecode!('z' as u8)))
+            ))
+        )
+    );
 
-    assert_eq!(parse_z_packet(&b"Z0,1ff,2;X1,0;cmdsX1,a"[..]),
-               Done(&b""[..], Command::InsertSoftwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(bytecode!('0' as u8))),
-                                                                Some(vec!(bytecode!('a' as u8)))))));
-    assert_eq!(parse_z_packet(&b"Z1,1ff,2;X1,0;cmdsX1,a"[..]),
-               Done(&b""[..], Command::InsertHardwareBreakpoint(Breakpoint::new(0x1ff, 2,
-                                                                Some(vec!(bytecode!('0' as u8))),
-                                                                Some(vec!(bytecode!('a' as u8)))))));
+    assert_eq!(
+        parse_z_packet(&b"Z0,1ff,2;X1,0;cmdsX1,a"[..]),
+        Done(
+            &b""[..],
+            Command::InsertSoftwareBreakpoint(Breakpoint::new(
+                0x1ff,
+                2,
+                Some(vec!(bytecode!('0' as u8))),
+                Some(vec!(bytecode!('a' as u8)))
+            ))
+        )
+    );
+    assert_eq!(
+        parse_z_packet(&b"Z1,1ff,2;X1,0;cmdsX1,a"[..]),
+        Done(
+            &b""[..],
+            Command::InsertHardwareBreakpoint(Breakpoint::new(
+                0x1ff,
+                2,
+                Some(vec!(bytecode!('0' as u8))),
+                Some(vec!(bytecode!('a' as u8)))
+            ))
+        )
+    );
 }
 
 #[test]
 fn test_cond_or_command_list() {
-    assert_eq!(parse_condition_list(&b";X1,a"[..]),
-               Done(&b""[..], vec!(bytecode!('a' as u8))));
-    assert_eq!(parse_condition_list(&b";X2,ab"[..]),
-               Done(&b""[..], vec!(bytecode!('a' as u8, 'b' as u8))));
-    assert_eq!(parse_condition_list(&b";X1,zX1,y"[..]),
-               Done(&b""[..], vec!(bytecode!('z' as u8),
-                                   bytecode!('y' as u8))));
-    assert_eq!(parse_condition_list(&b";X1,zX10,yyyyyyyyyyyyyyyy"[..]),
-               Done(&b""[..], vec!(bytecode!('z' as u8),
-                                   bytecode!['y' as u8; 16])));
+    assert_eq!(
+        parse_condition_list(&b";X1,a"[..]),
+        Done(&b""[..], vec!(bytecode!('a' as u8)))
+    );
+    assert_eq!(
+        parse_condition_list(&b";X2,ab"[..]),
+        Done(&b""[..], vec!(bytecode!('a' as u8, 'b' as u8)))
+    );
+    assert_eq!(
+        parse_condition_list(&b";X1,zX1,y"[..]),
+        Done(&b""[..], vec!(bytecode!('z' as u8), bytecode!('y' as u8)))
+    );
+    assert_eq!(
+        parse_condition_list(&b";X1,zX10,yyyyyyyyyyyyyyyy"[..]),
+        Done(
+            &b""[..],
+            vec!(bytecode!('z' as u8), bytecode!['y' as u8; 16])
+        )
+    );
 
-    assert_eq!(parse_command_list(&b";cmdsX1,a"[..]),
-               Done(&b""[..], vec!(bytecode!('a' as u8))));
-    assert_eq!(parse_command_list(&b";cmdsX2,ab"[..]),
-               Done(&b""[..], vec!(bytecode!('a' as u8, 'b' as u8))));
-    assert_eq!(parse_command_list(&b";cmdsX1,zX1,y"[..]),
-               Done(&b""[..], vec!(bytecode!('z' as u8),
-                                   bytecode!('y' as u8))));
-    assert_eq!(parse_command_list(&b";cmdsX1,zX10,yyyyyyyyyyyyyyyy"[..]),
-               Done(&b""[..], vec!(bytecode!('z' as u8),
-                                   bytecode!['y' as u8; 16])));
+    assert_eq!(
+        parse_command_list(&b";cmdsX1,a"[..]),
+        Done(&b""[..], vec!(bytecode!('a' as u8)))
+    );
+    assert_eq!(
+        parse_command_list(&b";cmdsX2,ab"[..]),
+        Done(&b""[..], vec!(bytecode!('a' as u8, 'b' as u8)))
+    );
+    assert_eq!(
+        parse_command_list(&b";cmdsX1,zX1,y"[..]),
+        Done(&b""[..], vec!(bytecode!('z' as u8), bytecode!('y' as u8)))
+    );
+    assert_eq!(
+        parse_command_list(&b";cmdsX1,zX10,yyyyyyyyyyyyyyyy"[..]),
+        Done(
+            &b""[..],
+            vec!(bytecode!('z' as u8), bytecode!['y' as u8; 16])
+        )
+    );
 }

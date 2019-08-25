@@ -10,7 +10,6 @@
 // `gdb_test` configures logging using env_logger, so you can get log output from tests by running:
 // RUST_LOG=gdb_remote_protocol=trace,integration=trace cargo test -- --nocapture
 
-
 extern crate assert_cli;
 extern crate env_logger;
 extern crate gdb_remote_protocol;
@@ -19,7 +18,7 @@ extern crate log;
 extern crate which;
 
 use assert_cli::Assert;
-use gdb_remote_protocol::{Error, Handler, ProcessType, process_packets_from, StopReason};
+use gdb_remote_protocol::{process_packets_from, Error, Handler, ProcessType, StopReason};
 use std::net::TcpListener;
 use std::thread;
 
@@ -57,41 +56,75 @@ struct GDBTestBuilder {
 impl GDBTestBuilder {
     /// Add `cmd` to the list of GDB commands to execute.
     fn command<T>(self, cmd: T) -> GDBTestBuilder
-        where T: AsRef<str>,
+    where
+        T: AsRef<str>,
     {
-        let GDBTestBuilder { assert, handler, listener } = self;
-        GDBTestBuilder { assert: assert.with_args(&["-ex", cmd.as_ref()]), handler, listener }
+        let GDBTestBuilder {
+            assert,
+            handler,
+            listener,
+        } = self;
+        GDBTestBuilder {
+            assert: assert.with_args(&["-ex", cmd.as_ref()]),
+            handler,
+            listener,
+        }
     }
 
     /// Add assertions for the GDB process. `f` will receive an `Assert` that can
     /// be used to add assertions and must return it.
     fn assert<F>(self, f: F) -> GDBTestBuilder
-        where F: FnOnce(Assert) -> Assert,
+    where
+        F: FnOnce(Assert) -> Assert,
     {
-        let GDBTestBuilder { assert, handler, listener } = self;
+        let GDBTestBuilder {
+            assert,
+            handler,
+            listener,
+        } = self;
         let assert = f(assert);
-        GDBTestBuilder { assert, handler, listener }
+        GDBTestBuilder {
+            assert,
+            handler,
+            listener,
+        }
     }
 
     /// Change the behavior of the `TestHandler`. `f` will receive a `&mut TestHandler` argument
     /// which can be changed as desired.
     fn handler<F>(self, f: F) -> GDBTestBuilder
-        where F: FnOnce(&mut TestHandler),
+    where
+        F: FnOnce(&mut TestHandler),
     {
-        let GDBTestBuilder { assert, mut handler, listener } = self;
+        let GDBTestBuilder {
+            assert,
+            mut handler,
+            listener,
+        } = self;
         f(&mut handler);
-        GDBTestBuilder { assert, handler, listener }
+        GDBTestBuilder {
+            assert,
+            handler,
+            listener,
+        }
     }
 
     /// Run the prepared test, panicing on failure.
     fn execute(self) {
-        let GDBTestBuilder { assert, handler, listener } = self;
+        let GDBTestBuilder {
+            assert,
+            handler,
+            listener,
+        } = self;
         let assert = assert.with_args(&["-ex", "quit"]);
         // Run the server on a background thread.
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("Listener's accept failed!");
-            process_packets_from(stream.try_clone().expect("TCPStream::try_clone failed!"),
-                                 stream, handler);
+            process_packets_from(
+                stream.try_clone().expect("TCPStream::try_clone failed!"),
+                stream,
+                handler,
+            );
         });
         debug!("Running GDB as {:?}", assert);
         assert.unwrap();
@@ -107,16 +140,24 @@ fn gdb_test() -> GDBTestBuilder {
     let gdb_s = gdb.to_string_lossy();
     // Next, create a TCP socket to listen on.
     let listener = TcpListener::bind("0.0.0.0:0").expect("Failed to bind TCP listen socket!");
-    let addr = listener.local_addr().expect("Failed to get listen socket address!");
+    let addr = listener
+        .local_addr()
+        .expect("Failed to get listen socket address!");
     let remote_cmd = format!("target remote {}", addr);
     let assert = Assert::command(&[&gdb_s, "-nx", "-batch", "-ex", &remote_cmd]);
     let handler = Default::default();
-    GDBTestBuilder { assert, handler, listener }
+    GDBTestBuilder {
+        assert,
+        handler,
+        listener,
+    }
 }
 
 #[test]
 fn simple() {
     // GDB will not do much with a process that has already exited, which is the default
     // stop_reason.
-    gdb_test().assert(|a| a.stderr().contains("The target is not running")).execute()
+    gdb_test()
+        .assert(|a| a.stderr().contains("The target is not running"))
+        .execute()
 }
