@@ -139,6 +139,8 @@ enum Query<'a> {
     ProgramSignals(Vec<u64>),
     /// Get a string description of a thread.
     ThreadInfo(ThreadId),
+    /// Get a list of all active threads
+    ThreadList(bool),
 }
 
 /// Part of a process id.
@@ -412,6 +414,8 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
         |value| Query::Attached(Some(value))
     }
     | tag!("qAttached") => { |_| Query::Attached(None) }
+    | tag!("qfThreadInfo") => { |_| Query::ThreadList(true) }
+    | tag!("qsThreadInfo") => { |_| Query::ThreadList(false) }
     | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
     | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
     | tag!("QCatchSyscalls:0") => { |_| Query::CatchSyscalls(None) }
@@ -951,6 +955,20 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Return a list of all active thread IDs. GDB will call this in
+    /// a paging fashion: First query has `reset` set to true and
+    /// should reply with the first chunk of threads. Further queries
+    /// have `reset` set to false and should respond with a chunk of
+    /// remaining threads, until completion which should return an
+    /// empty list to signify it's the end.
+    ///
+    /// Each initial GDB connection will query this and the very first
+    /// thread ID will be stopped - so ensure the first ID is ready to
+    /// be stopped and inspected by GDB.
+    fn thread_list(&self, _reset: bool) -> Result<Vec<ThreadId>, Error> {
+        Err(Error::Unimplemented)
+    }
+
     /// Insert a software breakpoint.
     fn insert_software_breakpoint(&self, _breakpoint: Breakpoint) -> Result<(), Error> {
         Err(Error::Unimplemented)
@@ -1030,6 +1048,7 @@ enum Response<'a> {
     Stopped(StopReason),
     SearchResult(Option<u64>),
     VContFeatures(Cow<'static, [VContFeature]>),
+    ThreadList(Vec<ThreadId>),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -1092,6 +1111,12 @@ impl<'a> From<String> for Response<'a> {
 impl<'a> From<Cow<'static, [VContFeature]>> for Response<'a> {
     fn from(features: Cow<'static, [VContFeature]>) -> Self {
         Response::VContFeatures(features)
+    }
+}
+
+impl<'a> From<Vec<ThreadId>> for Response<'a> {
+    fn from(threads: Vec<ThreadId>) -> Self {
+        Response::ThreadList(threads)
     }
 }
 
@@ -1233,6 +1258,20 @@ where
                 write!(writer, ";{}", feature as u8 as char)?;
             }
         }
+        Response::ThreadList(threads) => {
+            if threads.is_empty() {
+                write!(writer, "l")?;
+            } else {
+                write!(writer, "m")?;
+                for (i, &id) in threads.iter().enumerate() {
+                    // Write separator
+                    if i != 0 {
+                        write!(writer, ",")?;
+                    }
+                    write_thread_id(&mut writer, id)?;
+                }
+            }
+        }
     }
 
     writer.finish()
@@ -1338,6 +1377,7 @@ where
             Command::Query(Query::ThreadInfo(thread_info)) => {
                 handler.thread_info(thread_info).into()
             }
+            Command::Query(Query::ThreadList(reset)) => handler.thread_list(reset).into(),
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
@@ -1859,6 +1899,18 @@ fn test_thread_info() {
 }
 
 #[test]
+fn test_thread_list() {
+    assert_eq!(
+        query(&b"qfThreadInfo"[..]),
+        Done(&b""[..], Query::ThreadList(true))
+    );
+    assert_eq!(
+        query(&b"qsThreadInfo"[..]),
+        Done(&b""[..], Query::ThreadList(false))
+    );
+}
+
+#[test]
 fn test_parse_write_register() {
     assert_eq!(
         write_register(&b"Pff=1020"[..]),
@@ -1894,6 +1946,21 @@ fn test_write_response() {
         .unwrap(),
         "$QCpff.1#2f"
     );
+    assert_eq!(
+        write_one(Response::ThreadList(vec!(
+            ThreadId {
+                pid: Id::Id(123),
+                tid: Id::Id(123)
+            },
+            ThreadId {
+                pid: Id::Id(456),
+                tid: Id::Any
+            },
+        )))
+        .unwrap(),
+        "$mp7b.7b,p1c8.0#03"
+    );
+    assert_eq!(write_one(Response::ThreadList(vec!())).unwrap(), "$l#6c");
 }
 
 #[cfg(test)]
