@@ -27,11 +27,11 @@ use nom::IResult::*;
 use nom::{IResult, Needed};
 use std::borrow::Cow;
 use std::convert::From;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::str::{self, FromStr};
 
-const MAX_PACKET_SIZE: usize = 65 * 1024;
+const MAX_PACKET_SIZE: usize = 64 * 1024;
 
 named!(checksum<&[u8], u8>,
        map_res!(map_res!(take!(2), str::from_utf8),
@@ -1285,7 +1285,7 @@ where
     H: Handler,
 {
     let mut features = vec![
-        "PacketSize=65536".to_string(),
+        format!("PacketSize={:x}", MAX_PACKET_SIZE),
         "QStartNoAckMode+".to_string(),
         "multiprocess+".to_string(),
         "QDisableRandomization+".to_string(),
@@ -1424,47 +1424,40 @@ fn run_parser(buf: &[u8]) -> Option<(usize, Packet)> {
 
 /// Read gdbserver packets from `reader` and call methods on `handler` to handle them and write
 /// responses to `writer`.
-pub fn process_packets_from<R, W, H>(reader: R, mut writer: W, handler: H)
+pub fn process_packets_from<R, W, H>(mut reader: R, mut writer: W, handler: H)
 where
     R: Read,
     W: Write,
     H: Handler,
 {
-    let mut bufreader = BufReader::with_capacity(MAX_PACKET_SIZE, reader);
-    let mut done = false;
+    let mut buf = vec![0; MAX_PACKET_SIZE];
+    let mut endbuf = 0;
     let mut ack_mode = true;
-    while !done {
-        let length = if let Ok(buf) = bufreader.fill_buf() {
-            if buf.len() == 0 {
-                done = true;
+    loop {
+        match reader.read(&mut buf[endbuf..]) {
+            Ok(n) if n > 0 => endbuf += n,
+            _ => break,
+        }
+
+        let mut parsed = 0;
+        while let Some((len, packet)) = run_parser(&buf[parsed..endbuf]) {
+            if let Packet::Data(ref data, ref _checksum) = packet {
+                // Write an ACK
+                if ack_mode && writer.write_all(&b"+"[..]).is_err() {
+                    // TODO: propagate errors to caller?
+                    return;
+                }
+
+                let no_ack_mode = handle_packet(&data, &handler, &mut writer).unwrap_or(false);
+                if no_ack_mode {
+                    ack_mode = false;
+                }
             }
-            if let Some((len, packet)) = run_parser(buf) {
-                match packet {
-                    Packet::Data(ref data, ref _checksum) => {
-                        // Write an ACK
-                        if ack_mode && !writer.write_all(&b"+"[..]).is_ok() {
-                            //TODO: propagate errors to caller?
-                            return;
-                        }
-                        let no_ack_mode =
-                            handle_packet(&data, &handler, &mut writer).unwrap_or(false);
-                        if no_ack_mode {
-                            ack_mode = false;
-                        }
-                    }
-                    // Just ignore ACK/NACK/Interrupt
-                    _ => {}
-                };
-                len
-            } else {
-                0
-            }
-        } else {
-            // Error reading
-            done = true;
-            0
-        };
-        bufreader.consume(length);
+            parsed += len;
+        }
+
+        buf.copy_within(parsed..endbuf, 0);
+        endbuf -= parsed;
     }
 }
 
