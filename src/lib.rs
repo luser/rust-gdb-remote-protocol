@@ -22,10 +22,12 @@ extern crate nom;
 extern crate strum;
 #[macro_use]
 extern crate strum_macros;
+extern crate memchr;
 
 use nom::IResult::*;
 use nom::{IResult, Needed};
 use std::borrow::Cow;
+use std::cmp::min;
 use std::convert::From;
 use std::io::{self, Read, Write};
 use std::ops::Range;
@@ -141,6 +143,17 @@ enum Query<'a> {
     ThreadInfo(ThreadId),
     /// Get a list of all active threads
     ThreadList(bool),
+    /// Read a file such as target.xml from server
+    ReadBytes {
+        /// An object, like "features" for reading target.xml
+        object: String,
+        /// Object-specific data, like the string "target.xml"
+        annex: String,
+        /// Offset in data to start reading from
+        offset: u64,
+        /// How long to read (at most!)
+        length: u64,
+    },
 }
 
 /// Part of a process id.
@@ -433,6 +446,18 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     }
     | preceded!(tag!("qThreadExtraInfo,"), parse_thread_id) => {
         |thread_id| Query::ThreadInfo(thread_id)
+    }
+    | tuple!(
+        preceded!(tag!("qXfer:"), map_res!(take_until!(":"), str::from_utf8)),
+        preceded!(tag!(":read:"), map_res!(take_until!(":"), str::from_utf8)),
+        preceded!(tag!(":"), hex_value),
+        preceded!(tag!(","), hex_value)) => {
+        |(object, annex, offset, length): (&str, &str, u64, u64)| Query::ReadBytes {
+            object: object.to_owned(),
+            annex: annex.to_owned(),
+            offset,
+            length,
+        }
     }
     )
 }
@@ -885,6 +910,23 @@ pub trait Handler {
         Err(Error::Unimplemented)
     }
 
+    /// Read raw bytes from an object, such as "target.xml". See
+    /// https://sourceware.org/gdb/onlinedocs/gdb/General-Query-Packets.html#qXfer-read,
+    /// which describes which kinds of qXfer packets are available.
+    ///
+    /// Return `(buffer, eof)`, a tuple containing the read bytes (at most of
+    /// size `length`), if any, and also a boolean specifying whether or not
+    /// you're at the end (true = end of file, false = there's more to
+    /// read).
+    ///
+    /// If you're unsure of what to do, follow the rule `eof =
+    /// buffer.is_empty()`. You're allowed to lie about EOF when you're at the
+    /// end, GDB will just send one extra command asking for data, where you
+    /// must disappoint it by admitting you lied.
+    fn read_bytes(&self, _object: String, _annex: String, _offset: u64, _length: u64) -> Result<(Vec<u8>, bool), Error> {
+        Err(Error::Unimplemented)
+    }
+
     /// Return the identifier of the current thread.
     fn current_thread(&self) -> Result<Option<ThreadId>, Error> {
         Ok(None)
@@ -1043,6 +1085,7 @@ enum Response<'a> {
     String(Cow<'a, str>),
     Output(String),
     Bytes(Vec<u8>),
+    BytesOrEof(Vec<u8>, bool),
     CurrentThread(Option<ThreadId>),
     ProcessType(ProcessType),
     Stopped(StopReason),
@@ -1073,6 +1116,12 @@ impl<'a> From<()> for Response<'a> {
 impl<'a> From<Vec<u8>> for Response<'a> {
     fn from(response: Vec<u8>) -> Self {
         Response::Bytes(response)
+    }
+}
+
+impl<'a> From<(Vec<u8>, bool)> for Response<'a> {
+    fn from((data, eof): (Vec<u8>, bool)) -> Self {
+        Response::BytesOrEof(data, eof)
     }
 }
 
@@ -1210,6 +1259,33 @@ where
         Response::Bytes(bytes) => {
             for byte in bytes {
                 write!(writer, "{:02x}", byte)?;
+            }
+        }
+        Response::BytesOrEof(bytes, eof) => {
+            write!(writer, "{}", if eof { "l" } else { "m" })?;
+
+            // Modern GDB way of transmitting bytes: Send it raw, but with } as
+            // escape character. See
+            // https://sourceware.org/gdb/onlinedocs/gdb/Overview.html#Binary-Data
+            let mut remaining = &bytes[..];
+            loop {
+                let unescaped = min(
+                    memchr::memchr3(b'#', b'$', b'}', remaining).unwrap_or(remaining.len()),
+                    memchr::memchr(b'*', remaining).unwrap_or(remaining.len()),
+                );
+                writer.write_all(&remaining[..unescaped])?;
+
+                remaining = &remaining[unescaped..];
+
+                // We only stop when...
+                match remaining.first() {
+                    // ... a character needs to be escaped
+                    Some(byte) => writer.write_all(&[b'}', byte ^ 0x20])?,
+                    // ... we reach EOF
+                    None => break,
+                }
+
+                remaining = &remaining[1..];
             }
         }
         Response::CurrentThread(tid) => {
@@ -1378,6 +1454,7 @@ where
                 handler.thread_info(thread_info).into()
             }
             Command::Query(Query::ThreadList(reset)) => handler.thread_list(reset).into(),
+            Command::Query(Query::ReadBytes { object, annex, offset, length }) => handler.read_bytes(object, annex, offset, length).into(),
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
@@ -1954,6 +2031,8 @@ fn test_write_response() {
         "$mp7b.7b,p1c8.0#03"
     );
     assert_eq!(write_one(Response::ThreadList(vec!())).unwrap(), "$l#6c");
+    assert_eq!(write_one(Response::BytesOrEof(Vec::from(&b"{Hello * World} #yee $999.99"[..]), false)).unwrap(), "$m{Hello }\n World}] }\x03yee }\x04999.99#54");
+    assert_eq!(write_one(Response::BytesOrEof(Vec::from(&b"does not need to be escaped"[..]), true)).unwrap(), "$ldoes not need to be escaped#23");
 }
 
 #[cfg(test)]
@@ -2151,5 +2230,18 @@ fn test_cond_or_command_list() {
             &b""[..],
             vec!(bytecode!('z' as u8), bytecode!['y' as u8; 16])
         )
+    );
+}
+
+#[test]
+fn test_qxfer() {
+    assert_eq!(
+        query(&b"qXfer:features:read:target.xml:0,1000"[..]),
+        Done(&b""[..], Query::ReadBytes {
+            object: String::from("features"),
+            annex: String::from("target.xml"),
+            offset: 0,
+            length: 4096,
+        })
     );
 }
