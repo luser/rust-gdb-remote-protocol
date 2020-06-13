@@ -15,17 +15,11 @@
 
 #![deny(missing_docs)]
 
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate bitflags;
-extern crate byteorder;
-#[macro_use]
-extern crate nom;
-extern crate strum;
-#[macro_use]
-extern crate strum_macros;
-extern crate memchr;
+use log::{debug, trace};
+use bitflags::bitflags;
+
+use nom::*;
+use strum_macros::*;
 
 use nom::IResult::*;
 use nom::{IResult, Needed};
@@ -383,7 +377,7 @@ enum Command<'a> {
 }
 
 named!(
-    gdbfeature<Known>,
+    gdbfeature<Known<'_>>,
     map!(map_res!(is_not_s!(";="), str::from_utf8), |s| {
         match GDBFeature::from_str(s) {
             Ok(f) => Known::Yes(f),
@@ -1232,7 +1226,7 @@ pub trait Handler {
     /// (typically ASCII characters), to be interpreted by the server
     /// in any way it likes.  The result is output to send back to the
     /// client.  This is used to implement gdb's `monitor` command.
-    fn invoke(&self, &[u8]) -> Result<String, Error> {
+    fn invoke(&self, _: &[u8]) -> Result<String, Error> {
         Err(Error::Unimplemented)
     }
 
@@ -1527,7 +1521,7 @@ impl<'a> From<StopReason> for Response<'a> {
 
 impl<'a> From<String> for Response<'a> {
     fn from(reason: String) -> Self {
-        Response::String(Cow::Owned(reason) as Cow<str>)
+        Response::String(Cow::Owned(reason) as Cow<'_, str>)
     }
 }
 
@@ -1554,7 +1548,6 @@ impl<'a> From<HostIOResult> for Response<'a>
 struct PacketWriter<'a, W>
 where
     W: Write,
-    W: 'a,
 {
     writer: &'a mut W,
     checksum: u8,
@@ -1651,7 +1644,7 @@ fn write_binary_data<W>(writer: &mut W, data: &[u8]) -> io::Result<()>
     Ok(())
 }
 
-fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
+fn write_response<W>(response: Response<'_>, writer: &mut W) -> io::Result<()>
 where
     W: Write,
 {
@@ -1785,7 +1778,7 @@ where
     ];
     let mut new_features = handler.query_supported_features();
     features.append(&mut new_features);
-    Response::String(Cow::Owned(features.join(";")) as Cow<str>)
+    Response::String(Cow::Owned(features.join(";")) as Cow<'_, str>)
 }
 
 /// Handle a single packet `data` with `handler` and write a response to `writer`.
@@ -2437,7 +2430,7 @@ fn test_parse_write_general_registers() {
 
 #[test]
 fn test_write_response() {
-    fn write_one(input: Response) -> io::Result<String> {
+    fn write_one(input: Response<'_>) -> io::Result<String> {
         let mut result = Vec::new();
         write_response(input, &mut result)?;
         Ok(String::from_utf8(result).unwrap())

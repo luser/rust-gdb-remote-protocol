@@ -10,12 +10,8 @@
 // `gdb_test` configures logging using env_logger, so you can get log output from tests by running:
 // RUST_LOG=gdb_remote_protocol=trace,integration=trace cargo test -- --nocapture
 
-extern crate assert_cli;
-extern crate env_logger;
-extern crate gdb_remote_protocol;
 #[macro_use]
 extern crate log;
-extern crate which;
 
 use assert_cli::Assert;
 use gdb_remote_protocol::{process_packets_from, Error, Handler, ProcessType, StopReason};

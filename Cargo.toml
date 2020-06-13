@@ -1,5 +1,6 @@
 [package]
 name = "gdb-remote-protocol"
+edition = "2018"
 version = "0.1.0"
 description = "An implementation of the GDB remote protocol"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
