@@ -1622,26 +1622,33 @@ impl From<HostStat> for Vec<u8>
     }
 }
 
-fn write_binary_data<W>(writer: &mut W, data: Vec<u8>) -> io::Result<()>
+fn write_binary_data<W>(writer: &mut W, data: &[u8]) -> io::Result<()>
     where W: Write,
 {
-    let mut v: &[u8] = &data;
+    // Modern GDB way of transmitting bytes: Send it raw, but with } as
+    // escape character. See
+    // https://sourceware.org/gdb/onlinedocs/gdb/Overview.html#Binary-Data
+    let mut remaining = data;
+    loop {
+        let unescaped = min(
+            memchr::memchr3(b'#', b'$', b'}', remaining).unwrap_or(remaining.len()),
+            memchr::memchr(b'*', remaining).unwrap_or(remaining.len()),
+        );
+        writer.write_all(&remaining[..unescaped])?;
 
-    while let Some(p) = v.iter().position(&needs_escape) {
-        let (head, rest) = data.split_at(p);
-        writer.write_all(head)?;
+        remaining = &remaining[unescaped..];
 
-        let tmp = [0x7d, rest[0] ^ 0x20];
-        writer.write_all(&tmp)?;
+        // We only stop when...
+        match remaining.first() {
+            // ... a character needs to be escaped
+            Some(byte) => writer.write_all(&[b'}', byte ^ 0x20])?,
+            // ... we reach EOF
+            None => break,
+        }
 
-        v = &rest[1..];
+        remaining = &remaining[1..];
     }
-
-    return writer.write_all(&v);
-
-    fn needs_escape(byte: &u8) -> bool {
-        *byte == 0x23 || *byte == 0x24 || *byte == 0x7d || *byte == 0x2a
-    }
+    Ok(())
 }
 
 fn write_response<W>(response: Response, writer: &mut W) -> io::Result<()>
@@ -1676,30 +1683,7 @@ where
         }
         Response::BytesOrEof(bytes, eof) => {
             write!(writer, "{}", if eof { "l" } else { "m" })?;
-
-            // Modern GDB way of transmitting bytes: Send it raw, but with } as
-            // escape character. See
-            // https://sourceware.org/gdb/onlinedocs/gdb/Overview.html#Binary-Data
-            let mut remaining = &bytes[..];
-            loop {
-                let unescaped = min(
-                    memchr::memchr3(b'#', b'$', b'}', remaining).unwrap_or(remaining.len()),
-                    memchr::memchr(b'*', remaining).unwrap_or(remaining.len()),
-                );
-                writer.write_all(&remaining[..unescaped])?;
-
-                remaining = &remaining[unescaped..];
-
-                // We only stop when...
-                match remaining.first() {
-                    // ... a character needs to be escaped
-                    Some(byte) => writer.write_all(&[b'}', byte ^ 0x20])?,
-                    // ... we reach EOF
-                    None => break,
-                }
-
-                remaining = &remaining[1..];
-            }
+            write_binary_data(&mut writer, &bytes)?;
         }
         Response::CurrentThread(tid) => {
             // This is incorrect if multiprocess hasn't yet been enabled.
@@ -1770,11 +1754,11 @@ where
                 HostIOResult::Integer(i) => write!(writer, "F{:x}", i)?,
                 HostIOResult::Data(v) => {
                     write!(writer, "F{:x};", v.len())?;
-                    write_binary_data(&mut writer, v)?;
+                    write_binary_data(&mut writer, &v)?;
                 },
                 HostIOResult::Stat(stat) => {
                     write!(writer, "F0;")?;
-                    write_binary_data(&mut writer, stat.into())?
+                    write_binary_data(&mut writer, &<HostStat as Into<Vec<_>>>::into(stat)[..])?
                 },
             }
         }
@@ -2723,7 +2707,7 @@ fn test_write_binary_data() {
 
     fn check(data: Vec<u8>, output: Vec<u8>) {
         let mut v = vec![];
-        write_binary_data(&mut v, data).unwrap();
+        write_binary_data(&mut v, &data).unwrap();
         assert_eq!(v, output);
     }
 }
