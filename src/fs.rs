@@ -319,7 +319,7 @@ impl FileSystem for LibcFS {
     fn host_pread(&self, fd: u64, count: u64, offset: u64) -> IOResult<Vec<u8>> {
         Ok((|| {
             // Allocate `count` (converted to usize) bytes
-            let count = usize::try_from(count).unwrap_or(usize::MAX);
+            let count = usize::try_from(count).unwrap_or(std::usize::MAX);
             let mut buf: Vec<u8> = Vec::with_capacity(count);
 
             // Seek to `offset`
