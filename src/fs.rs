@@ -299,7 +299,7 @@ impl FileSystem for LibcFS {
                 S_IXOTH => libc::S_IXOTH,
             };
 
-            let fd: i32 = unsafe { libc::open(filename.as_ptr(), flags, mode) };
+            let fd: libc::c_int = unsafe { libc::open(filename.as_ptr(), flags, mode) };
             if fd >= 0 {
                 Ok(u64::from(fd as u32))
             } else {
@@ -309,7 +309,7 @@ impl FileSystem for LibcFS {
     }
     fn host_close(&self, fd: u64) -> IOResult<()> {
         Ok((|| {
-            if unsafe { libc::close(fd as i32) } == 0 {
+            if unsafe { libc::close(fd as libc::c_int) } == 0 {
                 Ok(())
             } else {
                 Err(errno())
@@ -322,21 +322,13 @@ impl FileSystem for LibcFS {
             let count = usize::try_from(count).unwrap_or(std::usize::MAX);
             let mut buf: Vec<u8> = Vec::with_capacity(count);
 
-            // Seek to `offset`
-            unsafe {
-                libc::lseek(
-                    fd as i32,
-                    libc::off_t::try_from(offset).expect("offset can't fit in an off_t"),
-                    libc::SEEK_SET,
-                );
-            }
-
             // Fill bytes as many as `read` bytes
             let read: isize = unsafe {
-                libc::read(
-                    fd as i32,
+                libc::pread(
+                    fd as libc::c_int,
                     buf.as_mut_ptr() as *mut libc::c_void,
                     count,
+                    offset as libc::off_t,
                 )
             };
 
@@ -353,21 +345,13 @@ impl FileSystem for LibcFS {
     }
     fn host_pwrite(&self, fd: u64, offset: u64, data: Vec<u8>) -> IOResult<u64> {
         Ok((|| {
-            // Seek to `offset`
-            unsafe {
-                libc::lseek(
-                    fd as i32,
-                    libc::off_t::try_from(offset).expect("offset can't fit in an off_t"),
-                    libc::SEEK_SET,
-                );
-            }
-
             // Write data, as much as `written` bytes of data
             let written: isize = unsafe {
-                libc::write(
-                    fd as i32,
+                libc::pwrite(
+                    fd as libc::c_int,
                     data.as_ptr() as *const libc::c_void,
-                    data.len()
+                    data.len(),
+                    offset as libc::off_t,
                 )
             };
 
@@ -382,7 +366,7 @@ impl FileSystem for LibcFS {
         Ok((|| {
             let mut stat: MaybeUninit<libc::stat> = MaybeUninit::uninit();
 
-            if unsafe { libc::fstat(fd as i32, stat.as_mut_ptr()) } == 0 {
+            if unsafe { libc::fstat(fd as libc::c_int, stat.as_mut_ptr()) } == 0 {
                 let stat = unsafe { stat.assume_init() };
                 Ok(HostStat {
                     st_dev: stat.st_dev as _,
