@@ -1,5 +1,6 @@
 [package]
 name = "gdb-remote-protocol"
+edition = "2018"
 version = "0.1.0"
 description = "An implementation of the GDB remote protocol"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
@@ -10,7 +11,10 @@ log = "0.4.1"
 nom = "3.2.0"
 strum = "0.8.0"
 strum_macros = "0.8.0"
+bitflags = "1.0"
+byteorder = "1.2"
 memchr = "2.3.3"
+libc = "0.2.71"
 
 [dev-dependencies]
 assert_cli = "0.5.4"
