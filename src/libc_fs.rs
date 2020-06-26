@@ -1,23 +1,14 @@
 //! Filesystem APIs implemenation using libc
 
+// Thanks, clippy, but it makes the code cleaner so it's not redundant.
 #![allow(clippy::redundant_closure_call)]
 
 use crate::fs::{FileSystem, HostErrno, HostMode, HostOpenFlags, HostStat, IOResult};
 use std::{convert::TryFrom, ffi::CString, mem::MaybeUninit};
 
-/// A filesystem implementation that delegates all calls to libc. Basically,
-/// this lets you use the operating system's notion of files, which is probably
-/// what you want.
-#[derive(Debug, Default)]
-pub struct LibcFS {
-    /// don't initiate this struct outside of this crate, for future backwards
-    /// compatibility
-    _private: (),
-}
-
 macro_rules! map_flags {
-    ($inflags:ident: $intype:ident, $($inflag:ident => $outflag:expr,)*) => {{
-        let mut flags = 0;
+    ($inflags:ident: $intype:ident -> $resdefault:expr, $($inflag:ident => $outflag:expr,)*) => {{
+        let mut flags = $resdefault;
 
         {
             $(if $inflags & $intype::$inflag == $intype::$inflag {
@@ -29,68 +20,128 @@ macro_rules! map_flags {
     }};
 }
 
-fn errno() -> HostErrno {
-    match unsafe { *libc::__errno_location() } {
-        libc::EPERM => HostErrno::EPERM,
-        libc::ENOENT => HostErrno::ENOENT,
-        libc::EINTR => HostErrno::EINTR,
-        libc::EBADF => HostErrno::EBADF,
-        libc::EACCES => HostErrno::EACCES,
-        libc::EFAULT => HostErrno::EFAULT,
-        libc::EBUSY => HostErrno::EBUSY,
-        libc::EEXIST => HostErrno::EEXIST,
-        libc::ENODEV => HostErrno::ENODEV,
-        libc::ENOTDIR => HostErrno::ENOTDIR,
-        libc::EISDIR => HostErrno::EISDIR,
-        libc::EINVAL => HostErrno::EINVAL,
-        libc::ENFILE => HostErrno::ENFILE,
-        libc::EMFILE => HostErrno::EMFILE,
-        libc::EFBIG => HostErrno::EFBIG,
-        libc::ENOSPC => HostErrno::ENOSPC,
-        libc::ESPIPE => HostErrno::ESPIPE,
-        libc::EROFS => HostErrno::EROFS,
-        libc::ENAMETOOLONG => HostErrno::ENAMETOOLONG,
-        _ => HostErrno::EUNKNOWN,
+impl HostErrno {
+    /// Map an errno from `libc` to a cross-platform GDB `HostErrno`.
+    pub fn from_libc(errno: libc::c_int) -> Self {
+        match errno {
+            libc::EPERM => Self::EPERM,
+            libc::ENOENT => Self::ENOENT,
+            libc::EINTR => Self::EINTR,
+            libc::EBADF => Self::EBADF,
+            libc::EACCES => Self::EACCES,
+            libc::EFAULT => Self::EFAULT,
+            libc::EBUSY => Self::EBUSY,
+            libc::EEXIST => Self::EEXIST,
+            libc::ENODEV => Self::ENODEV,
+            libc::ENOTDIR => Self::ENOTDIR,
+            libc::EISDIR => Self::EISDIR,
+            libc::EINVAL => Self::EINVAL,
+            libc::ENFILE => Self::ENFILE,
+            libc::EMFILE => Self::EMFILE,
+            libc::EFBIG => Self::EFBIG,
+            libc::ENOSPC => Self::ENOSPC,
+            libc::ESPIPE => Self::ESPIPE,
+            libc::EROFS => Self::EROFS,
+            libc::ENAMETOOLONG => Self::ENAMETOOLONG,
+            _ => Self::EUNKNOWN,
+        }
     }
 }
 
+impl HostMode {
+    /// Map a mode from `libc` to a cross-platform GDB `HostErrno`.
+    pub fn from_libc(mode: libc::mode_t) -> Self {
+        map_flags! {
+            mode: libc -> Self::empty(),
+            S_IFREG => Self::S_IFREG,
+            S_IFDIR => Self::S_IFDIR,
+            S_IRUSR => Self::S_IRUSR,
+            S_IWUSR => Self::S_IWUSR,
+            S_IXUSR => Self::S_IXUSR,
+            S_IRGRP => Self::S_IRGRP,
+            S_IWGRP => Self::S_IWGRP,
+            S_IXGRP => Self::S_IXGRP,
+            S_IROTH => Self::S_IROTH,
+            S_IWOTH => Self::S_IWOTH,
+            S_IXOTH => Self::S_IXOTH,
+        }
+    }
+
+    /// Map a mode from a cross-platform GDB `HostErrno` to the native `libc`
+    /// type.
+    pub fn into_libc(self) -> libc::mode_t {
+        map_flags! {
+            self: Self -> 0,
+            S_IFREG => libc::S_IFREG,
+            S_IFDIR => libc::S_IFDIR,
+            S_IRUSR => libc::S_IRUSR,
+            S_IWUSR => libc::S_IWUSR,
+            S_IXUSR => libc::S_IXUSR,
+            S_IRGRP => libc::S_IRGRP,
+            S_IWGRP => libc::S_IWGRP,
+            S_IXGRP => libc::S_IXGRP,
+            S_IROTH => libc::S_IROTH,
+            S_IWOTH => libc::S_IWOTH,
+            S_IXOTH => libc::S_IXOTH,
+        }
+    }
+}
+
+impl HostOpenFlags {
+    /// Map flags from `libc` to a cross-platform GDB `HostErrno`.
+    pub fn from_libc(flags: libc::c_int) -> Self {
+        map_flags! {
+            flags: libc -> Self::empty(),
+            // No O_RDONLY, it's zero and always set
+            O_WRONLY => Self::O_WRONLY,
+            O_RDWR   => Self::O_RDWR,
+            O_APPEND => Self::O_APPEND,
+            O_CREAT  => Self::O_CREAT,
+            O_TRUNC  => Self::O_TRUNC,
+            O_EXCL   => Self::O_EXCL,
+        }
+    }
+
+    /// Map flags from a cross-platform GDB `HostErrno` to the native `libc`
+    /// type.
+    pub fn into_libc(self) -> libc::c_int {
+        let mut res = map_flags! {
+            self: HostOpenFlags -> 0,
+            O_WRONLY => libc::O_WRONLY,
+            O_RDWR   => libc::O_RDWR,
+            O_APPEND => libc::O_APPEND,
+            O_CREAT  => libc::O_CREAT,
+            O_TRUNC  => libc::O_TRUNC,
+            O_EXCL   => libc::O_EXCL,
+        };
+        if !self.contains(Self::O_WRONLY) && !self.contains(Self::O_RDWR) {
+            res |= libc::O_RDONLY;
+        }
+        res
+    }
+}
+
+/// A filesystem implementation that delegates all calls to libc. Basically,
+/// this lets you use the operating system's notion of files, which is probably
+/// what you want.
+#[derive(Debug, Default)]
+pub struct LibcFS {
+    /// don't initiate this struct outside of this crate, for future backwards
+    /// compatibility
+    _private: (),
+}
+
+fn errno() -> HostErrno {
+    HostErrno::from_libc(unsafe { *libc::__errno_location() })
+}
+
 impl FileSystem for LibcFS {
-    fn host_open(
-        &self,
-        filename: Vec<u8>,
-        gdbflags: HostOpenFlags,
-        gdbmode: HostMode,
-    ) -> IOResult<u64> {
+    fn host_open(&self, filename: Vec<u8>, flags: HostOpenFlags, mode: HostMode) -> IOResult<u64> {
         Ok((|| {
             let filename = CString::new(filename).map_err(|_| HostErrno::ENOENT)?;
 
-            let flags = map_flags! {
-                gdbflags: HostOpenFlags,
-                O_RDONLY => libc::O_RDONLY,
-                O_WRONLY => libc::O_WRONLY,
-                O_RDWR   => libc::O_RDWR,
-                O_APPEND => libc::O_APPEND,
-                O_CREAT  => libc::O_CREAT,
-                O_TRUNC  => libc::O_TRUNC,
-                O_EXCL   => libc::O_EXCL,
-            };
-
-            let mode = map_flags! {
-                gdbmode: HostMode,
-                S_IFREG => libc::S_IFREG,
-                S_IFDIR => libc::S_IFDIR,
-                S_IRUSR => libc::S_IRUSR,
-                S_IWUSR => libc::S_IWUSR,
-                S_IXUSR => libc::S_IXUSR,
-                S_IRGRP => libc::S_IRGRP,
-                S_IWGRP => libc::S_IWGRP,
-                S_IXGRP => libc::S_IXGRP,
-                S_IROTH => libc::S_IROTH,
-                S_IWOTH => libc::S_IWOTH,
-                S_IXOTH => libc::S_IXOTH,
-            };
-
-            let fd: libc::c_int = unsafe { libc::open(filename.as_ptr(), flags, mode) };
+            let fd: libc::c_int =
+                unsafe { libc::open(filename.as_ptr(), flags.into_libc(), mode.into_libc()) };
             if fd >= 0 {
                 Ok(u64::from(fd as u32))
             } else {
@@ -160,9 +211,14 @@ impl FileSystem for LibcFS {
             if unsafe { libc::fstat(fd as libc::c_int, stat.as_mut_ptr()) } == 0 {
                 let stat = unsafe { stat.assume_init() };
                 Ok(HostStat {
-                    st_dev: stat.st_dev as _,
+                    // libc's st_dev is different than GDB's st_dev.
+                    // st_dev in GDB is described by https://sourceware.org/gdb/onlinedocs/gdb/struct-stat.html#struct-stat:
+                    // "A value of 0 represents a file, 1 the console."
+                    // While libc's ID is more complex (see `man fstat`)
+                    st_dev: 0,
+
                     st_ino: stat.st_ino as _,
-                    st_mode: stat.st_mode as _,
+                    st_mode: HostMode::from_libc(stat.st_mode),
                     st_nlink: stat.st_nlink as _,
                     st_uid: stat.st_uid as _,
                     st_gid: stat.st_gid as _,
