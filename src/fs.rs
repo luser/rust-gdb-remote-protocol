@@ -1,5 +1,8 @@
 //! Filesystem APIs for GDB, vFile
 
+// Thanks, clippy, but it makes the code cleaner so it's not redundant.
+#![allow(clippy::redundant_closure_call, clippy::unreadable_literal)]
+
 use bitflags::bitflags;
 use std::{
     convert::TryFrom,
@@ -10,34 +13,100 @@ use std::{
 
 /// Errno values for Host I/O operations.
 #[derive(Debug)]
-#[allow(missing_docs)]
 pub enum HostErrno {
+    /// Operation not permitted (POSIX.1-2001).
     EPERM = 1,
+    /// No such file or directory (POSIX.1-2001).
+    ///
+    /// Typically, this error results when a specified pathname does not exist,
+    /// or one of the components in the directory prefix of a pathname does not
+    /// exist, or the specified pathname is a dangling symbolic link.
     ENOENT = 2,
+    /// Interrupted function call (POSIX.1-2001); see signal(7).
     EINTR = 4,
+    /// Bad file descriptor (POSIX.1-2001).
     EBADF = 9,
+    /// Permission denied (POSIX.1-2001).
     EACCES = 13,
+    /// Bad address (POSIX.1-2001).
     EFAULT = 14,
+    /// Device or resource busy (POSIX.1-2001).
     EBUSY = 16,
+    /// File exists (POSIX.1-2001).
     EEXIST = 17,
+    /// No such device (POSIX.1-2001).
     ENODEV = 19,
+    /// Not a directory (POSIX.1-2001).
     ENOTDIR = 20,
+    /// Is a directory (POSIX.1-2001).
     EISDIR = 21,
+    /// Invalid argument (POSIX.1-2001).
     EINVAL = 22,
+    /// Too many open files in system (POSIX.1-2001). On Linux, this is probably
+    /// a result of encountering the /proc/sys/fs/file-max limit (see proc(5)).
     ENFILE = 23,
+    /// Too many open files (POSIX.1-2001). Commonly caused by exceeding the
+    /// RLIMIT_NOFILE resource limit described in getrlimit(2).
     EMFILE = 24,
+    /// File too large (POSIX.1-2001).
     EFBIG = 27,
+    /// No space left on device (POSIX.1-2001).
     ENOSPC = 28,
+    /// Invalid seek (POSIX.1-2001).
     ESPIPE = 29,
+    /// Read-only filesystem (POSIX.1-2001).
     EROFS = 30,
+    /// Filename too long (POSIX.1-2001).
     ENAMETOOLONG = 91,
+    /// Unknown errno - there may not be a GDB mapping for this value
     EUNKNOWN = 9999,
+}
+impl HostErrno {
+    /// Map an errno from `libc` to a cross-platform GDB `HostErrno`.
+    pub fn from_libc(errno: libc::c_int) -> Self {
+        match errno {
+            libc::EPERM        => Self::EPERM,
+            libc::ENOENT       => Self::ENOENT,
+            libc::EINTR        => Self::EINTR,
+            libc::EBADF        => Self::EBADF,
+            libc::EACCES       => Self::EACCES,
+            libc::EFAULT       => Self::EFAULT,
+            libc::EBUSY        => Self::EBUSY,
+            libc::EEXIST       => Self::EEXIST,
+            libc::ENODEV       => Self::ENODEV,
+            libc::ENOTDIR      => Self::ENOTDIR,
+            libc::EISDIR       => Self::EISDIR,
+            libc::EINVAL       => Self::EINVAL,
+            libc::ENFILE       => Self::ENFILE,
+            libc::EMFILE       => Self::EMFILE,
+            libc::EFBIG        => Self::EFBIG,
+            libc::ENOSPC       => Self::ENOSPC,
+            libc::ESPIPE       => Self::ESPIPE,
+            libc::EROFS        => Self::EROFS,
+            libc::ENAMETOOLONG => Self::ENAMETOOLONG,
+            _                  => Self::EUNKNOWN,
+        }
+    }
 }
 
 /// The result type for host I/O operations.  Return error if the operation
 /// in question is not implemented.  Otherwise, the success type indicates
 /// whether the operation succeeded, with `HostErrno` values for failure.
 pub type IOResult<T> = Result<Result<T, HostErrno>, ()>;
+
+macro_rules! map_flags {
+    ($inflags:ident: $intype:ident -> $resdefault:expr, $($inflag:ident => $outflag:expr,)*) => {{
+        let mut flags = $resdefault;
+
+        {
+            $(if $inflags & $intype::$inflag == $intype::$inflag {
+                flags |= $outflag;
+            })*
+        }
+
+        flags
+    }};
+}
 
 bitflags! {
     /// Host file permissions.
@@ -66,6 +135,44 @@ bitflags! {
         const S_IXOTH = 0o1;
     }
 }
+impl HostMode {
+    /// Map a mode from `libc` to a cross-platform GDB `HostErrno`.
+    pub fn from_libc(mode: libc::mode_t) -> Self {
+        map_flags! {
+            mode: libc -> Self::empty(),
+            S_IFREG => Self::S_IFREG,
+            S_IFDIR => Self::S_IFDIR,
+            S_IRUSR => Self::S_IRUSR,
+            S_IWUSR => Self::S_IWUSR,
+            S_IXUSR => Self::S_IXUSR,
+            S_IRGRP => Self::S_IRGRP,
+            S_IWGRP => Self::S_IWGRP,
+            S_IXGRP => Self::S_IXGRP,
+            S_IROTH => Self::S_IROTH,
+            S_IWOTH => Self::S_IWOTH,
+            S_IXOTH => Self::S_IXOTH,
+        }
+    }
+
+    /// Map a mode from a cross-platform GDB `HostErrno` to the native `libc`
+    /// type.
+    pub fn to_libc(self) -> libc::mode_t {
+        map_flags! {
+            self: Self -> 0,
+            S_IFREG => libc::S_IFREG,
+            S_IFDIR => libc::S_IFDIR,
+            S_IRUSR => libc::S_IRUSR,
+            S_IWUSR => libc::S_IWUSR,
+            S_IXUSR => libc::S_IXUSR,
+            S_IRGRP => libc::S_IRGRP,
+            S_IWGRP => libc::S_IWGRP,
+            S_IXGRP => libc::S_IXGRP,
+            S_IROTH => libc::S_IROTH,
+            S_IWOTH => libc::S_IWOTH,
+            S_IXOTH => libc::S_IXOTH,
+        }
+    }
+}
 
 bitflags! {
     // The read/write flags below may look a little weird, but that is the way
@@ -88,6 +195,39 @@ bitflags! {
         const O_EXCL = 0x800;
     }
 }
+impl HostOpenFlags {
+    /// Map flags from `libc` to a cross-platform GDB `HostErrno`.
+    pub fn from_libc(flags: libc::c_int) -> Self {
+        map_flags! {
+            flags: libc -> Self::empty(),
+            // No O_RDONLY, it's zero and always set
+            O_WRONLY => Self::O_WRONLY,
+            O_RDWR   => Self::O_RDWR,
+            O_APPEND => Self::O_APPEND,
+            O_CREAT  => Self::O_CREAT,
+            O_TRUNC  => Self::O_TRUNC,
+            O_EXCL   => Self::O_EXCL,
+        }
+    }
+
+    /// Map flags from a cross-platform GDB `HostErrno` to the native `libc`
+    /// type.
+    pub fn to_libc(self) -> libc::c_int {
+        let mut res = map_flags! {
+            self: HostOpenFlags -> 0,
+            O_WRONLY => libc::O_WRONLY,
+            O_RDWR   => libc::O_RDWR,
+            O_APPEND => libc::O_APPEND,
+            O_CREAT  => libc::O_CREAT,
+            O_TRUNC  => libc::O_TRUNC,
+            O_EXCL   => libc::O_EXCL,
+        };
+        if !self.contains(Self::O_WRONLY) && !self.contains(Self::O_RDWR) {
+            res |= libc::O_RDONLY;
+        }
+        res
+    }
+}
 
 /// Data returned by a host fstat request.  The members of this structure are
 /// specified by the remote protocol; conversion of actual host stat
@@ -100,7 +240,7 @@ pub struct HostStat {
     /// The inode.
     pub st_ino: u32,
     /// Protection bits.
-    pub st_mode: u32,
+    pub st_mode: HostMode,
     /// The number of hard links.
     pub st_nlink: u32,
     /// The user id of the owner.
@@ -137,7 +277,7 @@ where
 
     writer.write_u32::<BigEndian>(stat.st_dev)?;
     writer.write_u32::<BigEndian>(stat.st_ino)?;
-    writer.write_u32::<BigEndian>(stat.st_mode)?;
+    writer.write_u32::<BigEndian>(stat.st_mode.bits())?;
     writer.write_u32::<BigEndian>(stat.st_nlink)?;
     writer.write_u32::<BigEndian>(stat.st_uid)?;
     writer.write_u32::<BigEndian>(stat.st_gid)?;
@@ -158,7 +298,7 @@ pub fn read_stat(v: &[u8]) -> io::Result<HostStat> {
     let mut r = Cursor::new(v);
     let st_dev = r.read_u32::<BigEndian>()?;
     let st_ino = r.read_u32::<BigEndian>()?;
-    let st_mode = r.read_u32::<BigEndian>()?;
+    let st_mode = HostMode::from_bits_truncate(r.read_u32::<BigEndian>()?);
     let st_nlink = r.read_u32::<BigEndian>()?;
     let st_uid = r.read_u32::<BigEndian>()?;
     let st_gid = r.read_u32::<BigEndian>()?;
@@ -229,77 +369,16 @@ pub struct LibcFS {
     _private: (),
 }
 
-macro_rules! map_flags {
-    ($inflags:ident: $intype:ident, $($inflag:ident => $outflag:expr,)*) => {{
-        let mut flags = 0;
-
-        {
-            $(if $inflags & $intype::$inflag == $intype::$inflag {
-                flags |= $outflag;
-            })*
-        }
-
-        flags
-    }};
-}
-
 fn errno() -> HostErrno {
-    match unsafe { *libc::__errno_location() } {
-        libc::EPERM => HostErrno::EPERM,
-        libc::ENOENT => HostErrno::ENOENT,
-        libc::EINTR => HostErrno::EINTR,
-        libc::EBADF => HostErrno::EBADF,
-        libc::EACCES => HostErrno::EACCES,
-        libc::EFAULT => HostErrno::EFAULT,
-        libc::EBUSY => HostErrno::EBUSY,
-        libc::EEXIST => HostErrno::EEXIST,
-        libc::ENODEV => HostErrno::ENODEV,
-        libc::ENOTDIR => HostErrno::ENOTDIR,
-        libc::EISDIR => HostErrno::EISDIR,
-        libc::EINVAL => HostErrno::EINVAL,
-        libc::ENFILE => HostErrno::ENFILE,
-        libc::EMFILE => HostErrno::EMFILE,
-        libc::EFBIG => HostErrno::EFBIG,
-        libc::ENOSPC => HostErrno::ENOSPC,
-        libc::ESPIPE => HostErrno::ESPIPE,
-        libc::EROFS => HostErrno::EROFS,
-        libc::ENAMETOOLONG => HostErrno::ENAMETOOLONG,
-        _ => HostErrno::EUNKNOWN,
-    }
+    HostErrno::from_libc(unsafe { *libc::__errno_location() })
 }
 
 impl FileSystem for LibcFS {
-    fn host_open(&self, filename: Vec<u8>, gdbflags: HostOpenFlags, gdbmode: HostMode) -> IOResult<u64> {
+    fn host_open(&self, filename: Vec<u8>, flags: HostOpenFlags, mode: HostMode) -> IOResult<u64> {
         Ok((|| {
             let filename = CString::new(filename).map_err(|_| HostErrno::ENOENT)?;
 
-            let flags = map_flags! {
-                gdbflags: HostOpenFlags,
-                O_RDONLY => libc::O_RDONLY,
-                O_WRONLY => libc::O_WRONLY,
-                O_RDWR   => libc::O_RDWR,
-                O_APPEND => libc::O_APPEND,
-                O_CREAT  => libc::O_CREAT,
-                O_TRUNC  => libc::O_TRUNC,
-                O_EXCL   => libc::O_EXCL,
-            };
-
-            let mode = map_flags! {
-                gdbmode: HostMode,
-                S_IFREG => libc::S_IFREG,
-                S_IFDIR => libc::S_IFDIR,
-                S_IRUSR => libc::S_IRUSR,
-                S_IWUSR => libc::S_IWUSR,
-                S_IXUSR => libc::S_IXUSR,
-                S_IRGRP => libc::S_IRGRP,
-                S_IWGRP => libc::S_IWGRP,
-                S_IXGRP => libc::S_IXGRP,
-                S_IROTH => libc::S_IROTH,
-                S_IWOTH => libc::S_IWOTH,
-                S_IXOTH => libc::S_IXOTH,
-            };
-
-            let fd: libc::c_int = unsafe { libc::open(filename.as_ptr(), flags, mode) };
+            let fd: libc::c_int = unsafe { libc::open(filename.as_ptr(), flags.to_libc(), mode.to_libc()) };
             if fd >= 0 {
                 Ok(u64::from(fd as u32))
             } else {
@@ -369,9 +448,9 @@ impl FileSystem for LibcFS {
             if unsafe { libc::fstat(fd as libc::c_int, stat.as_mut_ptr()) } == 0 {
                 let stat = unsafe { stat.assume_init() };
                 Ok(HostStat {
-                    st_dev: stat.st_dev as _,
+                    st_dev: 0, // file, not console
                     st_ino: stat.st_ino as _,
-                    st_mode: stat.st_mode as _,
+                    st_mode: HostMode::from_libc(stat.st_mode),
                     st_nlink: stat.st_nlink as _,
                     st_uid: stat.st_uid as _,
                     st_gid: stat.st_gid as _,
@@ -397,4 +476,10 @@ impl FileSystem for LibcFS {
     fn host_setfs(&self, _pid: u64) -> IOResult<()> {
         Err(())
     }
+}
+
+#[test]
+fn stat_size() {
+    use std::mem;
+    assert_eq!(mem::size_of::<HostStat>(), 64);
 }
