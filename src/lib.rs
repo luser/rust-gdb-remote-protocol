@@ -30,8 +30,10 @@ use std::ops::Range;
 use std::str::{self, FromStr};
 
 mod fs;
+mod sigs;
 
 pub use self::fs::{FileSystem, HostErrno, HostMode, HostOpenFlags, IOResult, LibcFS};
+pub use self::sigs::Signal;
 use self::fs::{write_stat, HostStat};
 
 const MAX_PACKET_SIZE: usize = 64 * 1024;
