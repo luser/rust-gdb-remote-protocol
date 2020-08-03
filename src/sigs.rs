@@ -152,6 +152,7 @@ pub enum Signal {
 
 impl Signal {
     /// Convert platform-specific libc signal to cross-platfrom GDB signals
+    #[cfg(feature = "libc")]
     pub fn from_libc(sig: libc::c_int) -> Option<Self> {
         match sig {
             libc::SIGHUP => Some(Self::SIGHUP),
@@ -189,6 +190,7 @@ impl Signal {
         }
     }
     /// Convert cross-platfrom GDB signals to platform-specific libc signals
+    #[cfg(feature = "libc")]
     pub fn to_libc(self) -> Option<libc::c_int> {
         match self {
             Self::SIGHUP => Some(libc::SIGHUP),

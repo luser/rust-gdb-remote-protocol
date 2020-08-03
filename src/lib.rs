@@ -30,10 +30,15 @@ use std::ops::Range;
 use std::str::{self, FromStr};
 
 mod fs;
+#[cfg(feature = "libc")]
+mod libc_fs;
 mod sigs;
 
-pub use self::fs::{FileSystem, HostErrno, HostMode, HostOpenFlags, IOResult, LibcFS};
+pub use self::fs::{FileSystem, HostErrno, HostMode, HostOpenFlags, IOResult};
+#[cfg(feature = "libc")]
+pub use self::libc_fs::LibcFS;
 pub use self::sigs::Signal;
+
 use self::fs::{write_stat, HostStat};
 
 const MAX_PACKET_SIZE: usize = 64 * 1024;
@@ -486,12 +491,12 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
 // wanted a u32, or should we provide different versions of this function with
 // extra checking?
 named!(hex_value<&[u8], u64>,
-       map!(take_while1!(&nom::is_hex_digit),
-            |hex| {
-                let s = str::from_utf8(hex).unwrap();
-                let r = u64::from_str_radix(s, 16);
-                r.unwrap()
-            }));
+map!(take_while1!(&nom::is_hex_digit),
+     |hex| {
+         let s = str::from_utf8(hex).unwrap();
+         let r = u64::from_str_radix(s, 16);
+         r.unwrap()
+     }));
 
 named!(hex_digit<&[u8], char>,
        one_of!("0123456789abcdefABCDEF"));
@@ -561,105 +566,115 @@ named!(parse_thread_id_element<&[u8], Id>,
 
 // Parse a thread-id.
 named!(parse_thread_id<&[u8], ThreadId>,
-       alt_complete!(parse_thread_id_element => { |pid| ThreadId { pid: pid, tid: Id::Any } }
-                     | preceded!(tag!("p"),
-                                 separated_pair!(parse_thread_id_element,
-                                                 tag!("."),
-                                                 parse_thread_id_element)) => {
-                         |pair: (Id, Id)| ThreadId { pid: pair.0, tid: pair.1 }
-                     }
-                     | preceded!(tag!("p"), parse_thread_id_element) => {
-                         |id: Id| ThreadId { pid: id, tid: Id::All }
-                     }));
+alt_complete!(parse_thread_id_element => { |pid| ThreadId { pid: pid, tid: Id::Any } }
+              | preceded!(tag!("p"),
+                          separated_pair!(parse_thread_id_element,
+                                          tag!("."),
+                                          parse_thread_id_element)) => {
+                  |pair: (Id, Id)| ThreadId { pid: pair.0, tid: pair.1 }
+              }
+              | preceded!(tag!("p"), parse_thread_id_element) => {
+                  |id: Id| ThreadId { pid: id, tid: Id::All }
+              }));
 
 // Parse the T packet.
 named!(parse_ping_thread<&[u8], ThreadId>,
        preceded!(tag!("T"), parse_thread_id));
 
 fn parse_vfile_open<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("open:") >>
-              filename: hex_byte_sequence >>
-              tag!(",") >>
-              flags: hex_value >>
-              tag!(",") >>
-              mode: hex_value >>
-              (Command::HostOpen(filename, flags, mode)))
+    do_parse!(
+        i,
+        tag!("open:")
+            >> filename: hex_byte_sequence
+            >> tag!(",")
+            >> flags: hex_value
+            >> tag!(",")
+            >> mode: hex_value
+            >> (Command::HostOpen(filename, flags, mode))
+    )
 }
 
 fn parse_vfile_close<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("close:") >>
-              fd: hex_value >>
-              (Command::HostClose(fd)))
+    do_parse!(
+        i,
+        tag!("close:") >> fd: hex_value >> (Command::HostClose(fd))
+    )
 }
 
 fn parse_vfile_pread<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("pread:") >>
-              fd: hex_value >>
-              tag!(",") >>
-              count: hex_value >>
-              tag!(",") >>
-              offset: hex_value >>
-              (Command::HostPRead(fd, count, offset)))
+    do_parse!(
+        i,
+        tag!("pread:")
+            >> fd: hex_value
+            >> tag!(",")
+            >> count: hex_value
+            >> tag!(",")
+            >> offset: hex_value
+            >> (Command::HostPRead(fd, count, offset))
+    )
 }
 
 fn parse_vfile_pwrite<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("pwrite:") >>
-              fd: hex_value >>
-              tag!(",") >>
-              offset: hex_value >>
-              tag!(",") >>
-              data: binary_byte_sequence >>
-              (Command::HostPWrite(fd, offset, data)))
+    do_parse!(
+        i,
+        tag!("pwrite:")
+            >> fd: hex_value
+            >> tag!(",")
+            >> offset: hex_value
+            >> tag!(",")
+            >> data: binary_byte_sequence
+            >> (Command::HostPWrite(fd, offset, data))
+    )
 }
 
 fn parse_vfile_fstat<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("fstat:") >>
-              fd: hex_value >>
-              (Command::HostFStat(fd)))
+    do_parse!(
+        i,
+        tag!("fstat:") >> fd: hex_value >> (Command::HostFStat(fd))
+    )
 }
 
 fn parse_vfile_unlink<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("unlink:") >>
-              filename: hex_byte_sequence >>
-              (Command::HostUnlink(filename)))
+    do_parse!(
+        i,
+        tag!("unlink:") >> filename: hex_byte_sequence >> (Command::HostUnlink(filename))
+    )
 }
 
 fn parse_vfile_readlink<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("readlink:") >>
-              filename: hex_byte_sequence >>
-              (Command::HostReadlink(filename)))
+    do_parse!(
+        i,
+        tag!("readlink:") >> filename: hex_byte_sequence >> (Command::HostReadlink(filename))
+    )
 }
 
 fn parse_vfile_setfs<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    do_parse!(i,
-              tag!("setfs:") >>
-              pid: hex_value >>
-              (Command::HostSetFS(pid)))
+    do_parse!(
+        i,
+        tag!("setfs:") >> pid: hex_value >> (Command::HostSetFS(pid))
+    )
 }
 
 fn parse_unknown_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     // TODO: log the unknown operation for debugging purposes.
-    map!(i, take_till!(|_| { false}), { |_: &[u8]| Command::UnknownVCommand })
+    map!(i, take_till!(|_| { false }), {
+        |_: &[u8]| Command::UnknownVCommand
+    })
 }
 
 fn parse_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
-    alt_complete!(i,
-                  parse_vfile_open |
-                  parse_vfile_close |
-                  parse_vfile_pread |
-                  parse_vfile_pwrite |
-                  parse_vfile_fstat |
-                  parse_vfile_unlink |
-                  parse_vfile_readlink |
-                  parse_vfile_setfs |
-                  parse_unknown_vfile_op)
+    alt_complete!(
+        i,
+        parse_vfile_open
+            | parse_vfile_close
+            | parse_vfile_pread
+            | parse_vfile_pwrite
+            | parse_vfile_fstat
+            | parse_vfile_unlink
+            | parse_vfile_readlink
+            | parse_vfile_setfs
+            | parse_unknown_vfile_op
+    )
 }
 
 fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
@@ -1032,7 +1047,13 @@ pub trait Handler {
     /// buffer.is_empty()`. You're allowed to lie about EOF when you're at the
     /// end, GDB will just send one extra command asking for data, where you
     /// must disappoint it by admitting you lied.
-    fn read_bytes(&self, _object: String, _annex: String, _offset: u64, _length: u64) -> Result<(Vec<u8>, bool), Error> {
+    fn read_bytes(
+        &self,
+        _object: String,
+        _annex: String,
+        _offset: u64,
+        _length: u64,
+    ) -> Result<(Vec<u8>, bool), Error> {
         Err(Error::Unimplemented)
     }
 
@@ -1197,11 +1218,11 @@ fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
 
 #[derive(Debug)]
 enum HostIOResult {
-    Ok,                         // close, unlink, setfs
-    Error(HostErrno),           // error result for any operation
-    Integer(u64),               // open, pwrite
-    Data(Vec<u8>),              // pread, readlink
-    Stat(HostStat),             // fstat
+    Ok,               // close, unlink, setfs
+    Error(HostErrno), // error result for any operation
+    Integer(u64),     // open, pwrite
+    Data(Vec<u8>),    // pread, readlink
+    Stat(HostStat),   // fstat
 }
 
 #[derive(Debug)]
@@ -1236,7 +1257,8 @@ where
 }
 
 impl<'a, T> From<Result<T, HostErrno>> for HostIOResult
-    where HostIOResult: From<T>
+where
+    HostIOResult: From<T>,
 {
     fn from(result: Result<T, HostErrno>) -> Self {
         match result {
@@ -1271,7 +1293,8 @@ impl From<HostStat> for HostIOResult {
 }
 
 impl<'a, T> From<IOResult<T>> for Response<'a>
-    where HostIOResult: From<T>
+where
+    HostIOResult: From<T>,
 {
     fn from(result: IOResult<T>) -> Self {
         match result {
@@ -1344,8 +1367,7 @@ impl<'a> From<Vec<ThreadId>> for Response<'a> {
     }
 }
 
-impl<'a> From<HostIOResult> for Response<'a>
-{
+impl<'a> From<HostIOResult> for Response<'a> {
     fn from(result: HostIOResult) -> Self {
         Response::HostIOResult(result)
     }
@@ -1412,8 +1434,7 @@ where
     }
 }
 
-impl From<HostStat> for Vec<u8>
-{
+impl From<HostStat> for Vec<u8> {
     fn from(stat: HostStat) -> Self {
         let mut v = vec![];
         // XXX: this can technically fail, and we shouldn't be ignoring it.
@@ -1423,7 +1444,8 @@ impl From<HostStat> for Vec<u8>
 }
 
 fn write_binary_data<W>(writer: &mut W, data: &[u8]) -> io::Result<()>
-    where W: Write,
+where
+    W: Write,
 {
     // Modern GDB way of transmitting bytes: Send it raw, but with } as
     // escape character. See
@@ -1545,24 +1567,22 @@ where
                 }
             }
         }
-        Response::HostIOResult(result) => {
-            match result {
-                HostIOResult::Ok => write!(writer, "F0")?,
-                HostIOResult::Error(errno) => {
-                    write!(writer, "F-1,{:x}", errno as u32)?;
-                },
-                HostIOResult::Integer(i) => write!(writer, "F{:x}", i)?,
-                HostIOResult::Data(v) => {
-                    write!(writer, "F{:x};", v.len())?;
-                    write_binary_data(&mut writer, &v)?;
-                },
-                HostIOResult::Stat(stat) => {
-                    let data = <HostStat as Into<Vec<_>>>::into(stat);
-                    write!(writer, "F{:x};", data.len())?;
-                    write_binary_data(&mut writer, &data[..])?
-                },
+        Response::HostIOResult(result) => match result {
+            HostIOResult::Ok => write!(writer, "F0")?,
+            HostIOResult::Error(errno) => {
+                write!(writer, "F-1,{:x}", errno as u32)?;
             }
-        }
+            HostIOResult::Integer(i) => write!(writer, "F{:x}", i)?,
+            HostIOResult::Data(v) => {
+                write!(writer, "F{:x};", v.len())?;
+                write_binary_data(&mut writer, &v)?;
+            }
+            HostIOResult::Stat(stat) => {
+                let data = <HostStat as Into<Vec<_>>>::into(stat);
+                write!(writer, "F{:x};", data.len())?;
+                write_binary_data(&mut writer, &data[..])?
+            }
+        },
     }
 
     writer.finish()
@@ -1669,7 +1689,12 @@ where
                 handler.thread_info(thread_info).into()
             }
             Command::Query(Query::ThreadList(reset)) => handler.thread_list(reset).into(),
-            Command::Query(Query::ReadBytes { object, annex, offset, length }) => handler.read_bytes(object, annex, offset, length).into(),
+            Command::Query(Query::ReadBytes {
+                object,
+                annex,
+                offset,
+                length,
+            }) => handler.read_bytes(object, annex, offset, length).into(),
 
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
@@ -1691,13 +1716,33 @@ where
             Command::RemoveAccessWatchpoint(wp) => handler.remove_access_watchpoint(wp).into(),
             Command::VContSupported => handler.query_supported_vcont().into(),
             Command::VCont(list) => handler.vcont(list).into(),
-            Command::HostOpen(filename, mode, flags) => handler.fs().and_then(|fs| fs.host_open(filename, HostOpenFlags::from_bits_truncate(mode as u32), HostMode::from_bits_truncate(flags as u32))).into(),
+            Command::HostOpen(filename, mode, flags) => handler
+                .fs()
+                .and_then(|fs| {
+                    fs.host_open(
+                        filename,
+                        HostOpenFlags::from_bits_truncate(mode as u32),
+                        HostMode::from_bits_truncate(flags as u32),
+                    )
+                })
+                .into(),
             Command::HostClose(fd) => handler.fs().and_then(|fs| fs.host_close(fd)).into(),
-            Command::HostPRead(fd, count, offset) => handler.fs().and_then(|fs| fs.host_pread(fd, count, offset)).into(),
-            Command::HostPWrite(fd, offset, data) => handler.fs().and_then(|fs| fs.host_pwrite(fd, offset, data)).into(),
+            Command::HostPRead(fd, count, offset) => handler
+                .fs()
+                .and_then(|fs| fs.host_pread(fd, count, offset))
+                .into(),
+            Command::HostPWrite(fd, offset, data) => handler
+                .fs()
+                .and_then(|fs| fs.host_pwrite(fd, offset, data))
+                .into(),
             Command::HostFStat(fd) => handler.fs().and_then(|fs| fs.host_fstat(fd)).into(),
-            Command::HostUnlink(filename) => handler.fs().and_then(|fs| fs.host_unlink(filename)).into(),
-            Command::HostReadlink(filename) => handler.fs().and_then(|fs| fs.host_readlink(filename)).into(),
+            Command::HostUnlink(filename) => {
+                handler.fs().and_then(|fs| fs.host_unlink(filename)).into()
+            }
+            Command::HostReadlink(filename) => handler
+                .fs()
+                .and_then(|fs| fs.host_readlink(filename))
+                .into(),
             Command::HostSetFS(pid) => handler.fs().and_then(|fs| fs.host_setfs(pid)).into(),
         }
     } else {
@@ -2074,26 +2119,55 @@ fn test_parse_v_commands() {
         )
     );
 
-    assert_eq!(v_command(&b"vFile:open:2f766d6c696e757a,0,0"[..]),
-               Done(&b""[..], Command::HostOpen(vec!(47, 118, 109, 108, 105, 110, 117, 122), 0, 0)));
-    assert_eq!(v_command(&b"vFile:close:85"[..]),
-               Done(&b""[..], Command::HostClose(0x85)));
-    assert_eq!(v_command(&b"vFile:pread:5,96,327"[..]),
-               Done(&b""[..], Command::HostPRead(5, 0x96, 0x327)));
-    assert_eq!(v_command(&b"vFile:pwrite:6,83,\x00"[..]),
-               Done(&b""[..], Command::HostPWrite(6, 0x83, vec![0])));
-    assert_eq!(v_command(&b"vFile:pwrite:6,83,\x7d\x5d"[..]),
-               Done(&b""[..], Command::HostPWrite(6, 0x83, vec![0x7d])));
-    assert_eq!(v_command(&b"vFile:fstat:32"[..]),
-               Done(&b""[..], Command::HostFStat(0x32)));
-    assert_eq!(v_command(&b"vFile:unlink:2f766d6c696e757a"[..]),
-               Done(&b""[..], Command::HostUnlink(vec!(47, 118, 109, 108, 105, 110, 117, 122))));
-    assert_eq!(v_command(&b"vFile:readlink:2f766d6c696e757a"[..]),
-               Done(&b""[..], Command::HostReadlink(vec!(47, 118, 109, 108, 105, 110, 117, 122))));
-    assert_eq!(v_command(&b"vFile:setfs:0"[..]),
-               Done(&b""[..], Command::HostSetFS(0)));
-    assert_eq!(v_command(&b"vFile:fdopen:0"[..]),
-               Done(&b""[..], Command::UnknownVCommand));
+    assert_eq!(
+        v_command(&b"vFile:open:2f766d6c696e757a,0,0"[..]),
+        Done(
+            &b""[..],
+            Command::HostOpen(vec!(47, 118, 109, 108, 105, 110, 117, 122), 0, 0)
+        )
+    );
+    assert_eq!(
+        v_command(&b"vFile:close:85"[..]),
+        Done(&b""[..], Command::HostClose(0x85))
+    );
+    assert_eq!(
+        v_command(&b"vFile:pread:5,96,327"[..]),
+        Done(&b""[..], Command::HostPRead(5, 0x96, 0x327))
+    );
+    assert_eq!(
+        v_command(&b"vFile:pwrite:6,83,\x00"[..]),
+        Done(&b""[..], Command::HostPWrite(6, 0x83, vec![0]))
+    );
+    assert_eq!(
+        v_command(&b"vFile:pwrite:6,83,\x7d\x5d"[..]),
+        Done(&b""[..], Command::HostPWrite(6, 0x83, vec![0x7d]))
+    );
+    assert_eq!(
+        v_command(&b"vFile:fstat:32"[..]),
+        Done(&b""[..], Command::HostFStat(0x32))
+    );
+    assert_eq!(
+        v_command(&b"vFile:unlink:2f766d6c696e757a"[..]),
+        Done(
+            &b""[..],
+            Command::HostUnlink(vec!(47, 118, 109, 108, 105, 110, 117, 122))
+        )
+    );
+    assert_eq!(
+        v_command(&b"vFile:readlink:2f766d6c696e757a"[..]),
+        Done(
+            &b""[..],
+            Command::HostReadlink(vec!(47, 118, 109, 108, 105, 110, 117, 122))
+        )
+    );
+    assert_eq!(
+        v_command(&b"vFile:setfs:0"[..]),
+        Done(&b""[..], Command::HostSetFS(0))
+    );
+    assert_eq!(
+        v_command(&b"vFile:fdopen:0"[..]),
+        Done(&b""[..], Command::UnknownVCommand)
+    );
 }
 
 #[test]
@@ -2271,8 +2345,22 @@ fn test_write_response() {
         "$mp7b.7b,p1c8.0#03"
     );
     assert_eq!(write_one(Response::ThreadList(vec!())).unwrap(), "$l#6c");
-    assert_eq!(write_one(Response::BytesOrEof(Vec::from(&b"{Hello * World} #yee $999.99"[..]), false)).unwrap(), "$m{Hello }\n World}] }\x03yee }\x04999.99#54");
-    assert_eq!(write_one(Response::BytesOrEof(Vec::from(&b"does not need to be escaped"[..]), true)).unwrap(), "$ldoes not need to be escaped#23");
+    assert_eq!(
+        write_one(Response::BytesOrEof(
+            Vec::from(&b"{Hello * World} #yee $999.99"[..]),
+            false
+        ))
+        .unwrap(),
+        "$m{Hello }\n World}] }\x03yee }\x04999.99#54"
+    );
+    assert_eq!(
+        write_one(Response::BytesOrEof(
+            Vec::from(&b"does not need to be escaped"[..]),
+            true
+        ))
+        .unwrap(),
+        "$ldoes not need to be escaped#23"
+    );
 }
 
 #[cfg(test)]
@@ -2477,34 +2565,37 @@ fn test_cond_or_command_list() {
 fn test_qxfer() {
     assert_eq!(
         query(&b"qXfer:features:read:target.xml:0,1000"[..]),
-        Done(&b""[..], Query::ReadBytes {
-            object: String::from("features"),
-            annex: String::from("target.xml"),
-            offset: 0,
-            length: 4096,
-        })
+        Done(
+            &b""[..],
+            Query::ReadBytes {
+                object: String::from("features"),
+                annex: String::from("target.xml"),
+                offset: 0,
+                length: 4096,
+            }
+        )
     );
 }
 
 #[test]
 fn test_write_binary_data() {
     // Ordinary data, no escapes.
-    check(vec!(1, 2, 3), vec!(1, 2, 3));
+    check(vec![1, 2, 3], vec![1, 2, 3]);
     // Escape required at the beginning.
-    check(vec!(0x7d, 2, 3), vec!(0x7d, 0x5d, 2, 3));
-    check(vec!(0x23, 2, 3), vec!(0x7d, 0x03, 2, 3));
-    check(vec!(0x24, 2, 3), vec!(0x7d, 0x04, 2, 3));
-    check(vec!(0x2a, 2, 3), vec!(0x7d, 0x0a, 2, 3));
+    check(vec![0x7d, 2, 3], vec![0x7d, 0x5d, 2, 3]);
+    check(vec![0x23, 2, 3], vec![0x7d, 0x03, 2, 3]);
+    check(vec![0x24, 2, 3], vec![0x7d, 0x04, 2, 3]);
+    check(vec![0x2a, 2, 3], vec![0x7d, 0x0a, 2, 3]);
     // Escape required at the end.
-    check(vec!(8, 9, 0x7d), vec!(8, 9, 0x7d, 0x5d));
-    check(vec!(8, 9, 0x23), vec!(8, 9, 0x7d, 0x03));
-    check(vec!(8, 9, 0x24), vec!(8, 9, 0x7d, 0x04));
-    check(vec!(8, 9, 0x2a), vec!(8, 9, 0x7d, 0x0a));
+    check(vec![8, 9, 0x7d], vec![8, 9, 0x7d, 0x5d]);
+    check(vec![8, 9, 0x23], vec![8, 9, 0x7d, 0x03]);
+    check(vec![8, 9, 0x24], vec![8, 9, 0x7d, 0x04]);
+    check(vec![8, 9, 0x2a], vec![8, 9, 0x7d, 0x0a]);
     // Escape required in the middle.
-    check(vec!(8, 9, 0x7d, 5, 6), vec!(8, 9, 0x7d, 0x5d, 5, 6));
-    check(vec!(8, 9, 0x23, 5, 6), vec!(8, 9, 0x7d, 0x03, 5, 6));
-    check(vec!(8, 9, 0x24, 5, 6), vec!(8, 9, 0x7d, 0x04, 5, 6));
-    check(vec!(8, 9, 0x2a, 5, 6), vec!(8, 9, 0x7d, 0x0a, 5, 6));
+    check(vec![8, 9, 0x7d, 5, 6], vec![8, 9, 0x7d, 0x5d, 5, 6]);
+    check(vec![8, 9, 0x23, 5, 6], vec![8, 9, 0x7d, 0x03, 5, 6]);
+    check(vec![8, 9, 0x24, 5, 6], vec![8, 9, 0x7d, 0x04, 5, 6]);
+    check(vec![8, 9, 0x2a, 5, 6], vec![8, 9, 0x7d, 0x0a, 5, 6]);
 
     fn check(data: Vec<u8>, output: Vec<u8>) {
         let mut v = vec![];
