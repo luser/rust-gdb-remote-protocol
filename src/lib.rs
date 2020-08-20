@@ -112,6 +112,15 @@ enum FeatureSupported<'a> {
     Value(&'a str),
 }
 
+/// Defines target for the set_current_thread command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SetThreadFor {
+    /// For 'Continue' command.
+    Continue,
+    /// For `ReadRegister` command.
+    ReadRegister,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Query<'a> {
     /// Return the attached state of the indicated process.
@@ -162,6 +171,12 @@ enum Query<'a> {
         /// How long to read (at most!)
         length: u64,
     },
+    /// Register info
+    RegisterInfo(u64),
+    /// Process info
+    ProcessInfo,
+    /// Symbol
+    Symbol(String, String),
 }
 
 /// Part of a process id.
@@ -337,12 +352,14 @@ enum Command<'a> {
     // Write specified region of memory.
     WriteMemory(MemoryRegion, Vec<u8>),
     Query(Query<'a>),
+    Continue,
+    Step,
     Reset,
     PingThread(ThreadId),
     CtrlC,
     UnknownVCommand,
     /// Set the current thread for future commands, such as `ReadRegister`.
-    SetCurrentThread(ThreadId),
+    SetCurrentThread(SetThreadFor, ThreadId),
     /// Insert a software breakpoint.
     InsertSoftwareBreakpoint(Breakpoint),
     /// Insert a hardware breakpoint
@@ -454,6 +471,7 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     | tag!("qAttached") => { |_| Query::Attached(None) }
     | tag!("qfThreadInfo") => { |_| Query::ThreadList(true) }
     | tag!("qsThreadInfo") => { |_| Query::ThreadList(false) }
+    | tag!("qProcessInfo") => { |_| Query::ProcessInfo }
     | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
     | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
     | tag!("QCatchSyscalls:0") => { |_| Query::CatchSyscalls(None) }
@@ -471,6 +489,14 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     }
     | preceded!(tag!("qThreadExtraInfo,"), parse_thread_id) => {
         |thread_id| Query::ThreadInfo(thread_id)
+    }
+    | preceded!(tag!("qRegisterInfo"), hex_value) => {
+        |reg| Query::RegisterInfo(reg)
+    }
+    | tuple!(
+        preceded!(tag!("qSymbol:"), map_res!(take_until!(":"), str::from_utf8)),
+        preceded!(tag!(":"), map_res!(eof!(), str::from_utf8))) => {
+        |(sym_value, sym_name): (&str, &str)| Query::Symbol(sym_value.to_owned(), sym_name.to_owned())
     }
     | tuple!(
         preceded!(tag!("qXfer:"), map_res!(take_until!(":"), str::from_utf8)),
@@ -714,8 +740,15 @@ fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
 }
 
 // Parse the H packet.
-named!(parse_h_packet<&[u8], ThreadId>,
-       preceded!(tag!("Hg"), parse_thread_id));
+named!(parse_h_packet<&[u8], (SetThreadFor, ThreadId)>,
+    alt_complete!(
+       preceded!(tag!("Hg"), parse_thread_id) => {
+        |id| (SetThreadFor::ReadRegister, id)
+       }
+       | preceded!(tag!("Hc"), parse_thread_id) => {
+        |id| (SetThreadFor::Continue, id)
+       }
+));
 
 // Parse the D packet.
 named!(parse_d_packet<&[u8], Option<u64>>,
@@ -877,13 +910,15 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | parse_d_packet => { |pid| Command::Detach(pid) }
          | tag!("g") => { |_| Command::ReadGeneralRegisters }
          | write_general_registers => { |bytes| Command::WriteGeneralRegisters(bytes) }
-         | parse_h_packet => { |thread_id| Command::SetCurrentThread(thread_id) }
+         | parse_h_packet => { |(f, thread_id)| Command::SetCurrentThread(f, thread_id) }
          | tag!("k") => { |_| Command::Kill(None) }
          | read_memory => { |(addr, length)| Command::ReadMemory(MemoryRegion::new(addr, length)) }
          | write_memory => { |(addr, length, bytes)| Command::WriteMemory(MemoryRegion::new(addr, length), bytes) }
          | read_register => { |regno| Command::ReadRegister(regno) }
          | write_register => { |(regno, bytes)| Command::WriteRegister(regno, bytes) }
          | query => { |q| Command::Query(q) }
+         | tag!("c") => { |_| Command::Continue }
+         | tag!("s") => { |_| Command::Step }
          | tag!("r") => { |_| Command::Reset }
          | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
          | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
@@ -952,6 +987,15 @@ pub enum StopReason {
     // VForkDone,
     // Exec(String),
     // NewThread(ThreadId),
+}
+
+/// Symbol lookup response.
+#[derive(Clone, Debug)]
+pub enum SymbolLookupResponse {
+    /// No symbol name.
+    Ok,
+    /// New symbol name.
+    Symbol(String),
 }
 
 /// This trait should be implemented by servers.  Methods in the trait
@@ -1063,7 +1107,7 @@ pub trait Handler {
     }
 
     /// Set the current thread for future operations.
-    fn set_current_thread(&self, _id: ThreadId) -> Result<(), Error> {
+    fn set_current_thread(&self, _for: SetThreadFor, _id: ThreadId) -> Result<(), Error> {
         Err(Error::Unimplemented)
     }
 
@@ -1210,6 +1254,35 @@ pub trait Handler {
     fn fs(&self) -> Result<&dyn FileSystem, ()> {
         Err(())
     }
+
+    /// Continues execution.
+    fn process_continue(&self) -> Result<StopReason, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Step execution.
+    fn process_step(&self) -> Result<StopReason, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Notifies about symbol requests.
+    fn process_symbol(
+        &self,
+        _sym_value: &str,
+        _sym_name: &str,
+    ) -> Result<SymbolLookupResponse, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Returns information about specified register.
+    fn register_info(&self, _reg: u64) -> Result<String, Error> {
+        Err(Error::Unimplemented)
+    }
+
+    /// Returns process information.
+    fn process_info(&self) -> Result<String, Error> {
+        Err(Error::Unimplemented)
+    }
 }
 
 fn compute_checksum_incremental(bytes: &[u8], init: u8) -> u8 {
@@ -1241,6 +1314,7 @@ enum Response<'a> {
     VContFeatures(Cow<'static, [VContFeature]>),
     ThreadList(Vec<ThreadId>),
     HostIOResult(HostIOResult),
+    SymbolName(String),
 }
 
 impl<'a, T> From<Result<T, Error>> for Response<'a>
@@ -1367,6 +1441,15 @@ impl<'a> From<Vec<ThreadId>> for Response<'a> {
     }
 }
 
+impl<'a> From<SymbolLookupResponse> for Response<'a> {
+    fn from(response: SymbolLookupResponse) -> Self {
+        match response {
+            SymbolLookupResponse::Ok => Response::Ok,
+            SymbolLookupResponse::Symbol(n) => Response::SymbolName(n),
+        }
+    }
+}
+
 impl<'a> From<HostIOResult> for Response<'a> {
     fn from(result: HostIOResult) -> Self {
         Response::HostIOResult(result)
@@ -1441,6 +1524,16 @@ impl From<HostStat> for Vec<u8> {
         write_stat(&mut v, stat).unwrap();
         v
     }
+}
+
+fn write_hex_data<W>(writer: &mut W, data: &[u8]) -> io::Result<()>
+where
+    W: Write,
+{
+    for b in data {
+        write!(writer, "{:02x}", b)?;
+    }
+    Ok(())
 }
 
 fn write_binary_data<W>(writer: &mut W, data: &[u8]) -> io::Result<()>
@@ -1567,6 +1660,10 @@ where
                 }
             }
         }
+        Response::SymbolName(name) => {
+            write!(writer, "qSymbol:")?;
+            write_hex_data(&mut writer, name.as_bytes())?;
+        }
         Response::HostIOResult(result) => match result {
             HostIOResult::Ok => write!(writer, "F0")?,
             HostIOResult::Error(errno) => {
@@ -1649,8 +1746,12 @@ where
                     handler.write_memory(region.address, &bytes[..]).into()
                 }
             }
-            Command::SetCurrentThread(thread_id) => handler.set_current_thread(thread_id).into(),
+            Command::SetCurrentThread(f, thread_id) => {
+                handler.set_current_thread(f, thread_id).into()
+            }
             Command::Detach(pid) => handler.detach(pid).into(),
+            Command::Continue => handler.process_continue().into(),
+            Command::Step => handler.process_step().into(),
 
             Command::Query(Query::Attached(pid)) => handler.attached(pid).into(),
             Command::Query(Query::CurrentThread) => handler.current_thread().into(),
@@ -1695,7 +1796,11 @@ where
                 offset,
                 length,
             }) => handler.read_bytes(object, annex, offset, length).into(),
-
+            Command::Query(Query::RegisterInfo(reg)) => handler.register_info(reg).into(),
+            Command::Query(Query::ProcessInfo) => handler.process_info().into(),
+            Command::Query(Query::Symbol(sym_value, sym_name)) => {
+                handler.process_symbol(&sym_value, &sym_name).into()
+            }
             Command::PingThread(thread_id) => handler.ping_thread(thread_id).into(),
             // Empty means "not implemented".
             Command::CtrlC => Response::Empty,
