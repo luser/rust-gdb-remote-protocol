@@ -172,8 +172,10 @@ enum Query<'a> {
         length: u64,
     },
     /// Register info
+    #[cfg(feature = "lldb")]
     RegisterInfo(u64),
     /// Process info
+    #[cfg(feature = "lldb")]
     ProcessInfo,
     /// Symbol
     Symbol(String, String),
@@ -352,7 +354,9 @@ enum Command<'a> {
     // Write specified region of memory.
     WriteMemory(MemoryRegion, Vec<u8>),
     Query(Query<'a>),
+    #[cfg(feature = "all_stop")]
     Continue,
+    #[cfg(feature = "all_stop")]
     Step,
     Reset,
     PingThread(ThreadId),
@@ -449,6 +453,21 @@ named!(q_search_memory<&[u8], (u64, u64, Vec<u8>)>,
            data: hex_byte_sequence >>
            (address, length, data))));
 
+#[cfg(feature = "lldb")]
+fn lldb_query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
+    alt!(i,
+        tag!("qProcessInfo") => { |_| Query::ProcessInfo }
+        | preceded!(tag!("qRegisterInfo"), hex_value) => {
+            |reg| Query::RegisterInfo(reg)
+        }
+    )
+}
+
+#[cfg(not(feature = "lldb"))]
+fn lldb_query<'a>(_i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
+    IResult::Error(error_position!(ErrorKind::Alt, _i))
+}
+
 fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     alt_complete!(i,
     tag!("qC") => { |_| Query::CurrentThread }
@@ -471,7 +490,6 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     | tag!("qAttached") => { |_| Query::Attached(None) }
     | tag!("qfThreadInfo") => { |_| Query::ThreadList(true) }
     | tag!("qsThreadInfo") => { |_| Query::ThreadList(false) }
-    | tag!("qProcessInfo") => { |_| Query::ProcessInfo }
     | tag!("QDisableRandomization:0") => { |_| Query::AddressRandomization(true) }
     | tag!("QDisableRandomization:1") => { |_| Query::AddressRandomization(false) }
     | tag!("QCatchSyscalls:0") => { |_| Query::CatchSyscalls(None) }
@@ -490,9 +508,6 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
     | preceded!(tag!("qThreadExtraInfo,"), parse_thread_id) => {
         |thread_id| Query::ThreadInfo(thread_id)
     }
-    | preceded!(tag!("qRegisterInfo"), hex_value) => {
-        |reg| Query::RegisterInfo(reg)
-    }
     | tuple!(
         preceded!(tag!("qSymbol:"), map_res!(take_until!(":"), str::from_utf8)),
         preceded!(tag!(":"), map_res!(eof!(), str::from_utf8))) => {
@@ -509,6 +524,9 @@ fn query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
             offset,
             length,
         }
+    }
+    | lldb_query => {
+        |q| q
     }
     )
 }
@@ -903,6 +921,19 @@ fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     }
 }
 
+#[cfg(feature = "all_stop")]
+fn all_stop_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    alt!(i,
+        tag!("c") => { |_| Command::Continue }
+        | tag!("s") => { |_| Command::Step }
+   )
+}
+
+#[cfg(not(feature = "all_stop"))]
+fn all_stop_command<'a>(_i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+    IResult::Error(error_position!(ErrorKind::Alt, _i))
+}
+
 fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     alt!(i,
          tag!("!") => { |_|   Command::EnableExtendedMode }
@@ -917,14 +948,13 @@ fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
          | read_register => { |regno| Command::ReadRegister(regno) }
          | write_register => { |(regno, bytes)| Command::WriteRegister(regno, bytes) }
          | query => { |q| Command::Query(q) }
-         | tag!("c") => { |_| Command::Continue }
-         | tag!("s") => { |_| Command::Step }
          | tag!("r") => { |_| Command::Reset }
          | preceded!(tag!("R"), take!(2)) => { |_| Command::Reset }
          | parse_ping_thread => { |thread_id| Command::PingThread(thread_id) }
          | v_command => { |command| command }
          | write_memory_binary => { |(addr, length, bytes)| Command::WriteMemory(MemoryRegion::new(addr, length), bytes) }
          | parse_z_packet => { |command| command }
+         | all_stop_command => { |command| command }
     )
 }
 
@@ -1256,11 +1286,13 @@ pub trait Handler {
     }
 
     /// Continues execution.
+    #[cfg(feature = "all_stop")]
     fn process_continue(&self) -> Result<StopReason, Error> {
         Err(Error::Unimplemented)
     }
 
     /// Step execution.
+    #[cfg(feature = "all_stop")]
     fn process_step(&self) -> Result<StopReason, Error> {
         Err(Error::Unimplemented)
     }
@@ -1275,11 +1307,13 @@ pub trait Handler {
     }
 
     /// Returns information about specified register.
+    #[cfg(feature = "lldb")]
     fn register_info(&self, _reg: u64) -> Result<String, Error> {
         Err(Error::Unimplemented)
     }
 
     /// Returns process information.
+    #[cfg(feature = "lldb")]
     fn process_info(&self) -> Result<String, Error> {
         Err(Error::Unimplemented)
     }
@@ -1750,7 +1784,9 @@ where
                 handler.set_current_thread(f, thread_id).into()
             }
             Command::Detach(pid) => handler.detach(pid).into(),
+            #[cfg(feature = "all_stop")]
             Command::Continue => handler.process_continue().into(),
+            #[cfg(feature = "all_stop")]
             Command::Step => handler.process_step().into(),
 
             Command::Query(Query::Attached(pid)) => handler.attached(pid).into(),
@@ -1796,7 +1832,9 @@ where
                 offset,
                 length,
             }) => handler.read_bytes(object, annex, offset, length).into(),
+            #[cfg(feature = "lldb")]
             Command::Query(Query::RegisterInfo(reg)) => handler.register_info(reg).into(),
+            #[cfg(feature = "lldb")]
             Command::Query(Query::ProcessInfo) => handler.process_info().into(),
             Command::Query(Query::Symbol(sym_value, sym_name)) => {
                 handler.process_symbol(&sym_value, &sym_name).into()
