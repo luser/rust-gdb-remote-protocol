@@ -1,5 +1,7 @@
 //! Filesystem APIs implemenation using libc
 
+#![allow(clippy::redundant_closure_call)]
+
 use crate::fs::{FileSystem, HostErrno, HostMode, HostOpenFlags, HostStat, IOResult};
 use std::{convert::TryFrom, ffi::CString, mem::MaybeUninit};
 

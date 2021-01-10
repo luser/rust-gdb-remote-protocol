@@ -14,6 +14,7 @@
 //! * [LLDB extensions](https://github.com/llvm-mirror/lldb/blob/master/docs/lldb-gdb-remote.txt)
 
 #![deny(missing_docs)]
+#![allow(clippy::enum_variant_names, clippy::result_unit_err)]
 
 use log::{debug, trace};
 
@@ -454,7 +455,7 @@ named!(q_search_memory<&[u8], (u64, u64, Vec<u8>)>,
            (address, length, data))));
 
 #[cfg(feature = "lldb")]
-fn lldb_query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
+fn lldb_query(i: &[u8]) -> IResult<&[u8], Query<'_>> {
     alt!(i,
         tag!("qProcessInfo") => { |_| Query::ProcessInfo }
         | preceded!(tag!("qRegisterInfo"), hex_value) => {
@@ -464,7 +465,7 @@ fn lldb_query<'a>(i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
 }
 
 #[cfg(not(feature = "lldb"))]
-fn lldb_query<'a>(_i: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
+fn lldb_query(_i: &[u8]) -> IResult<&[u8], Query<'_>> {
     IResult::Error(error_position!(ErrorKind::Alt, _i))
 }
 
@@ -549,7 +550,7 @@ named!(hex_byte<&[u8], u8>,
        do_parse!(
            digit0: hex_digit >>
            digit1: hex_digit >>
-           (((16 * digit0.to_digit(16).unwrap() + digit1.to_digit(16).unwrap())) as u8)
+           ((16 * digit0.to_digit(16).unwrap() + digit1.to_digit(16).unwrap()) as u8)
        )
 );
 
@@ -610,7 +611,7 @@ named!(parse_thread_id_element<&[u8], Id>,
 
 // Parse a thread-id.
 named!(parse_thread_id<&[u8], ThreadId>,
-alt_complete!(parse_thread_id_element => { |pid| ThreadId { pid: pid, tid: Id::Any } }
+alt_complete!(parse_thread_id_element => { |pid| ThreadId { pid, tid: Id::Any } }
               | preceded!(tag!("p"),
                           separated_pair!(parse_thread_id_element,
                                           tag!("."),
@@ -625,7 +626,7 @@ alt_complete!(parse_thread_id_element => { |pid| ThreadId { pid: pid, tid: Id::A
 named!(parse_ping_thread<&[u8], ThreadId>,
        preceded!(tag!("T"), parse_thread_id));
 
-fn parse_vfile_open<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_open(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("open:")
@@ -638,14 +639,14 @@ fn parse_vfile_open<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     )
 }
 
-fn parse_vfile_close<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_close(i: &[u8]) -> IResult<&[u8], Command> {
     do_parse!(
         i,
         tag!("close:") >> fd: hex_value >> (Command::HostClose(fd))
     )
 }
 
-fn parse_vfile_pread<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_pread(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("pread:")
@@ -658,7 +659,7 @@ fn parse_vfile_pread<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     )
 }
 
-fn parse_vfile_pwrite<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_pwrite(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("pwrite:")
@@ -671,42 +672,42 @@ fn parse_vfile_pwrite<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     )
 }
 
-fn parse_vfile_fstat<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_fstat(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("fstat:") >> fd: hex_value >> (Command::HostFStat(fd))
     )
 }
 
-fn parse_vfile_unlink<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_unlink(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("unlink:") >> filename: hex_byte_sequence >> (Command::HostUnlink(filename))
     )
 }
 
-fn parse_vfile_readlink<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_readlink(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("readlink:") >> filename: hex_byte_sequence >> (Command::HostReadlink(filename))
     )
 }
 
-fn parse_vfile_setfs<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_setfs(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     do_parse!(
         i,
         tag!("setfs:") >> pid: hex_value >> (Command::HostSetFS(pid))
     )
 }
 
-fn parse_unknown_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_unknown_vfile_op(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     // TODO: log the unknown operation for debugging purposes.
     map!(i, take_till!(|_| { false }), {
         |_: &[u8]| Command::UnknownVCommand
     })
 }
 
-fn parse_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_vfile_op(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     alt_complete!(
         i,
         parse_vfile_open
@@ -721,7 +722,7 @@ fn parse_vfile_op<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
     )
 }
 
-fn v_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn v_command(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     alt_complete!(i,
     tag!("vCtrlC") => { |_| Command::CtrlC }
     | preceded!(tag!("vCont"),
@@ -813,7 +814,7 @@ named!(parse_condition_list<&[u8], Vec<Bytecode>>,
                  list: many1!(parse_cond_or_command_expression) >>
                  (list)));
 
-fn maybe_condition_list<'a>(i: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
+fn maybe_condition_list(i: &[u8]) -> IResult<&[u8], Option<Vec<Bytecode>>> {
     // An Incomplete here really means "not enough input to match a
     // condition list", and that's OK.  An Error is *probably* that the
     // input contains a command list rather than a condition list; the
@@ -836,7 +837,7 @@ named!(parse_command_list<&[u8], Vec<Bytecode>>,
                                      many1!(parse_cond_or_command_expression)) >>
                  (list)));
 
-fn maybe_command_list<'a>(i: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Bytecode>>> {
+fn maybe_command_list(i: &[u8]) -> IResult<&[u8], Option<Vec<Bytecode>>> {
     // An Incomplete here really means "not enough input to match a
     // command list", and that's OK.
     match parse_command_list(i) {
@@ -852,7 +853,7 @@ named!(parse_cond_and_command_list<&[u8], (Option<Vec<Bytecode>>,
                  cmd_list: maybe_command_list >>
                  (cond_list, cmd_list)));
 
-fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn parse_z_packet(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     let (rest, (action, type_, addr, kind)) = try_parse!(
         i,
         do_parse!(
@@ -871,12 +872,12 @@ fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
         ZAction::Remove => Done(rest, remove_command(type_, addr, kind)),
     };
 
-    fn insert_command<'a>(
-        rest: &'a [u8],
+    fn insert_command(
+        rest: &[u8],
         type_: ZType,
         addr: u64,
         kind: u64,
-    ) -> IResult<&'a [u8], Command<'a>> {
+    ) -> IResult<&[u8], Command<'_>> {
         match type_ {
             // Software and hardware breakpoints both permit optional condition
             // lists and commands that are evaluated on the target when
@@ -922,19 +923,19 @@ fn parse_z_packet<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
 }
 
 #[cfg(feature = "all_stop")]
-fn all_stop_command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn all_stop_command(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     alt!(i,
-        tag!("c") => { |_| Command::Continue }
-        | tag!("s") => { |_| Command::Step }
-   )
+         tag!("c") => { |_| Command::Continue }
+         | tag!("s") => { |_| Command::Step }
+    )
 }
 
 #[cfg(not(feature = "all_stop"))]
-fn all_stop_command<'a>(_i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn all_stop_command(_i: &[u8]) -> IResult<&[u8], Command<'_>> {
     IResult::Error(error_position!(ErrorKind::Alt, _i))
 }
 
-fn command<'a>(i: &'a [u8]) -> IResult<&'a [u8], Command<'a>> {
+fn command(i: &[u8]) -> IResult<&[u8], Command<'_>> {
     alt!(i,
          tag!("!") => { |_|   Command::EnableExtendedMode }
          | tag!("?") => { |_| Command::TargetHaltReason }
@@ -1505,7 +1506,7 @@ where
 {
     fn new(writer: &'a mut W) -> PacketWriter<'a, W> {
         PacketWriter {
-            writer: writer,
+            writer,
             checksum: 0,
         }
     }
@@ -1721,7 +1722,7 @@ where
 
 fn handle_supported_features<'a, H>(
     handler: &H,
-    _features: &Vec<GDBFeatureSupported<'a>>,
+    _features: &[GDBFeatureSupported<'a>],
 ) -> Response<'static>
 where
     H: Handler,
@@ -1793,7 +1794,7 @@ where
             Command::Query(Query::CurrentThread) => handler.current_thread().into(),
             Command::Query(Query::Invoke(cmd)) => match handler.invoke(&cmd[..]) {
                 Result::Ok(val) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         Response::Ok
                     } else {
                         Response::Output(val)

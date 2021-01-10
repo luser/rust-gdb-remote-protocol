@@ -191,7 +191,7 @@ impl Signal {
     }
     /// Convert cross-platfrom GDB signals to platform-specific libc signals
     #[cfg(feature = "libc")]
-    pub fn to_libc(self) -> Option<libc::c_int> {
+    pub fn into_libc(self) -> Option<libc::c_int> {
         match self {
             Self::SIGHUP => Some(libc::SIGHUP),
             Self::SIGINT => Some(libc::SIGINT),
